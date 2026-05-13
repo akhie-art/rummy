@@ -377,7 +377,7 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
         </>
 
         {/* CLEAN CIRCULAR TABLE CONTAINER */}
-        <div className="w-[70vh] max-w-[480px] aspect-square rounded-full relative flex items-center justify-center border border-zinc-800/40 bg-black/10">
+        <div className="w-[75vmin] max-w-[480px] aspect-square rounded-full relative flex items-center justify-center border border-zinc-800/40 bg-black/10">
           {/* Subdued Orbit Ring */}
           <div className="absolute inset-8 border border-zinc-900/50 border-dashed rounded-full pointer-events-none" />
 

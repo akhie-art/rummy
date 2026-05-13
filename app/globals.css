@@ -95,16 +95,4 @@ body {
   animation: fiery-bloom 2.2s cubic-bezier(0.25, 1, 0.5, 1) forwards;
 }
 
-/* Portrait Rotation Blocker Utility */
-.portrait-blocker {
-  display: none !important;
-}
 
-@media (max-width: 932px) and (orientation: portrait) {
-  .portrait-blocker {
-    display: flex !important;
-    flex-direction: column !important;
-    align-items: center !important;
-    justify-content: center !important;
-  }
-}
