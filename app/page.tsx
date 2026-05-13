@@ -141,6 +141,9 @@ export default function Home() {
                   if (newState.status === "playing") {
                     if (currView === "player_lobby") return "player_game";
                     if (currView === "host_lobby") return "host_game";
+                  } else if (newState.status === "waiting") {
+                    if (currView === "player_game") return "player_lobby";
+                    if (currView === "host_game") return "host_lobby";
                   }
                   return currView;
                 });
@@ -319,6 +322,45 @@ export default function Home() {
     setView("host_game");
   };
 
+  // 3.5 Host Action: End current game round, commit final scores and send players back to lobby
+  const handleFinishGame = async (updatedPlayers: RemotePlayer[]) => {
+    if (!roomCode) return;
+
+    const { data, error } = await supabase
+      .from("rooms")
+      .select("game_state")
+      .eq("room_code", roomCode.toUpperCase())
+      .maybeSingle();
+
+    if (!error && data) {
+      const activeState = data.game_state as RemoteGameState;
+      
+      const updatedState: RemoteGameState = {
+        ...activeState,
+        status: "waiting", // Reset state back to lobby!
+        deck: [],
+        discard_pile: [],
+        players: updatedPlayers.map((p) => ({
+          ...p,
+          hand: [],
+          melds: [],
+          hasDrawn: false,
+          // Cumulative score is updated and preserved!
+        })),
+        turn_index: 0
+      };
+
+      await updateRemoteRoom(updatedState);
+
+      // Optimistic Sync for rapid host responsiveness
+      setRemotePlayers(updatedState.players);
+      setGameStatus(updatedState.status);
+      setDeck([]);
+      setDiscardPile([]);
+      setView("host_lobby");
+    }
+  };
+
   // Initialize and Start Game
   const initGame = () => {
     const rawDeck = createDeck();
@@ -413,9 +455,14 @@ export default function Home() {
     setTimeout(() => setToastMsg(null), 3000);
   };
 
-  // --- MANUALLY TRIGGERED CLEAN EXIT ---
-  const handleExitGame = (nextView: ViewState = "landing") => {
-    console.log("🧹 [CLEAN EXIT]: Clearing persistence tokens and closing channels.");
+  // --- MANUALLY TRIGGERED CLEAN EXIT & REMOTE DE-REGISTRATION ---
+  const handleExitGame = async (nextView: ViewState = "landing") => {
+    console.log("🧹 [CLEAN EXIT]: Clearing persistence tokens and updating remote registry.");
+    
+    const leavingPlayer = playerName;
+    const currentRoom = roomCode;
+
+    // 1. Clean Local persistence caches
     localStorage.removeItem("rummy_room_code");
     localStorage.removeItem("rummy_player_name");
     localStorage.removeItem("rummy_is_host");
@@ -423,10 +470,46 @@ export default function Home() {
     try {
       supabase.removeAllChannels();
     } catch (err) {
-      console.warn("Silent WS disconnect skipping:", err);
+      console.warn("WS channel cleanup bypass:", err);
     }
 
+    // 2. Optimistic Local state wipe & redirection!
     setView(nextView);
+
+    // 3. DB Atomic Eviction Trigger (Only when non-host exits to landing!)
+    if (currentRoom && leavingPlayer && nextView === "landing") {
+      try {
+        const { data, error } = await supabase
+          .from("rooms")
+          .select("game_state")
+          .eq("room_code", currentRoom.toUpperCase())
+          .maybeSingle();
+
+        if (!error && data) {
+          const currentState = data.game_state as RemoteGameState;
+          if (currentState && Array.isArray(currentState.players)) {
+            // Construct the next player pool by filtering out leaving user
+            const nextPlayers = currentState.players.filter(
+              (p) => p.name.toUpperCase() !== leavingPlayer.toUpperCase()
+            );
+
+            const updatedState: RemoteGameState = {
+              ...currentState,
+              players: nextPlayers
+            };
+
+            await supabase
+              .from("rooms")
+              .update({ game_state: updatedState })
+              .eq("room_code", currentRoom.toUpperCase());
+
+            console.log(`📤 [DB EVACUATED] Ejected player '${leavingPlayer}' successfully.`);
+          }
+        }
+      } catch (err) {
+        console.error("Player atomic eject error:", err);
+      }
+    }
   };
 
 
@@ -506,6 +589,9 @@ export default function Home() {
             if (serverState.status === "playing") {
               if (currView === "player_lobby") return "player_game";
               if (currView === "host_lobby") return "host_game";
+            } else if (serverState.status === "waiting") {
+              if (currView === "player_game") return "player_lobby";
+              if (currView === "host_game") return "host_lobby";
             }
             return currView;
           });
@@ -1057,6 +1143,7 @@ export default function Home() {
           initGame={initGame}
           setView={handleExitGame}
           chatMessages={chatMessages}
+          finishGame={handleFinishGame}
         />
       )}
 

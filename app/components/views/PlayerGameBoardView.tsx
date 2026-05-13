@@ -110,28 +110,43 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
     >
       {/* 5.1 Clean Top Status Bar */}
       <div className="pl-6 pr-36 py-3 flex justify-between items-center border-b border-zinc-900/80">
-        <div className="flex items-center gap-2">
-          <div
-            className={`w-1.5 h-1.5 rounded-full ${
-              isMyTurn ? "bg-emerald-500 animate-pulse" : "bg-zinc-700"
-            }`}
-          />
-          <div>
-            <span className="text-[10px] font-medium text-zinc-300 uppercase tracking-[0.2em] block leading-none">
-              {isMyTurn
-                ? hasDrawnThisTurn
-                  ? "Pilih & Buang"
-                  : "Giliran Anda"
-                : `Giliran: ${activePlayerName}`}
-            </span>
-            <span className="text-[9px] font-mono text-zinc-600 mt-0.5 block uppercase tracking-wider">
-              {isMyTurn
-                ? hasDrawnThisTurn
-                  ? "Buang 1 kartu"
-                  : "Ambil 1 kartu"
-                : "Menunggu Giliran Lawan"}
-            </span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <div
+              className={`w-1.5 h-1.5 rounded-full ${
+                isMyTurn ? "bg-emerald-500 animate-pulse" : "bg-zinc-700"
+              }`}
+            />
+            <div>
+              <span className="text-[10px] font-medium text-zinc-300 uppercase tracking-[0.2em] block leading-none">
+                {isMyTurn
+                  ? hasDrawnThisTurn
+                    ? "Pilih & Buang"
+                    : "Giliran Anda"
+                  : `Giliran: ${activePlayerName}`}
+              </span>
+              <span className="text-[9px] font-mono text-zinc-600 mt-0.5 block uppercase tracking-wider">
+                {isMyTurn
+                  ? hasDrawnThisTurn
+                    ? "Buang 1 kartu"
+                    : "Ambil 1 kartu"
+                  : "Menunggu Giliran Lawan"}
+              </span>
+            </div>
           </div>
+
+          {/* SUBDUED EMERGENCY EXIT PILL */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              if (confirm("Apakah Anda yakin ingin menyerah & keluar dari ruangan?")) {
+                setView("landing"); // Triggers handleExitGame("landing") in parent!
+              }
+            }}
+            className="ml-1.5 px-2 py-1 border border-red-950 bg-red-950/20 text-red-500/70 hover:text-red-400 hover:border-red-800/60 rounded-md text-[8px] font-black font-mono tracking-widest uppercase transition-all active:scale-90 hover:shadow-[0_0_10px_rgba(220,38,38,0.15)] cursor-pointer flex items-center"
+          >
+            Keluar
+          </button>
         </div>
 
         {/* Live Hand Point Counter Badge */}

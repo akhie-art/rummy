@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import PlayingCard from "../PlayingCard";
 import { RemotePlayer, ViewState, ChatMessage } from "../../types/game";
-import { Card } from "../../utils/gameLogic";
+import { Card, getCardPoints } from "../../utils/gameLogic";
 
 interface HostGameBoardViewProps {
   roomCode: string;
@@ -12,6 +12,7 @@ interface HostGameBoardViewProps {
   initGame: () => void;
   setView: (view: ViewState) => void;
   chatMessages: ChatMessage[];
+  finishGame: (updatedPlayers: RemotePlayer[]) => Promise<void>;
 }
 
 const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
@@ -23,6 +24,7 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
   initGame,
   setView,
   chatMessages,
+  finishGame,
 }) => {
   const seatPlayers = remotePlayers.filter((p) => !p.isHost);
   const bottomPlayer = seatPlayers[0];
@@ -116,6 +118,10 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
   const lastSeenDiscardId = useRef<string | null>(discardPile[0]?.id || null);
   const lastSeenPlayersHands = useRef<{ [name: string]: number }>({});
 
+  // --- PLAYER ABANDONMENT ENGINE ---
+  const [abandonedPlayerName, setAbandonedPlayerName] = useState<string | null>(null);
+  const lastSeenPlayerNamesRef = useRef<string[]>(remotePlayers.map((p) => p.name));
+
   // --- INTEGRATED SPECTATOR SPEECH BUBBLE ENGINE ---
   const [activeSpeaker, setActiveSpeaker] = useState<{ sender: string, text?: string, photoBase64?: string } | null>(null);
   const lastProcessedMsgTime = useRef<number>(Date.now());
@@ -144,6 +150,60 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
       }, 4000); // Hover for 4 seconds of pure amusement!
     }
   }, [chatMessages]);
+
+  // --- ADMINISTRATOR GAME OVER STANDINGS ENGINE ---
+  const [gameOverData, setGameOverData] = useState<{
+    standings: { name: string; roundPoints: number; prevScore: number; totalScore: number }[];
+    updatedPlayers: RemotePlayer[];
+  } | null>(null);
+  const [isSubmittingFinish, setIsSubmittingFinish] = useState(false);
+
+  const triggerFinishGameDialog = () => {
+    // 1. Hitung poin kartu di tangan untuk masing-masing pemain aktif
+    const rawStandings = seatPlayers.map((player) => {
+      const roundPoints = player.hand.reduce((sum, card) => sum + getCardPoints(card), 0);
+      const prevScore = player.score || 0;
+      const totalScore = prevScore + roundPoints;
+      
+      return {
+        name: player.name,
+        roundPoints,
+        prevScore,
+        totalScore
+      };
+    });
+
+    // 2. Remi Indonesia: Total Poin PALING RENDAH adalah Pemenangnya! (Urutkan Naik)
+    rawStandings.sort((a, b) => a.totalScore - b.totalScore);
+
+    // 3. Siapkan daftar remotePlayers baru dengan skor kumulatif yang sudah diperbarui
+    const updatedPlayers = remotePlayers.map((p) => {
+      if (p.isHost) return p;
+      const match = rawStandings.find((s) => s.name === p.name);
+      return {
+        ...p,
+        score: match ? match.totalScore : p.score
+      };
+    });
+
+    setGameOverData({
+      standings: rawStandings,
+      updatedPlayers
+    });
+  };
+
+  const handleConfirmFinish = async () => {
+    if (!gameOverData) return;
+    setIsSubmittingFinish(true);
+    try {
+      await finishGame(gameOverData.updatedPlayers);
+    } catch (err) {
+      console.error("Gagal menyelesaikan permainan:", err);
+    } finally {
+      setIsSubmittingFinish(false);
+      setGameOverData(null);
+    }
+  };
 
   // PREMIUM CARD THROWING ANIMATION ENGINE
   const [flyingCard, setFlyingCard] = useState<{
@@ -224,6 +284,17 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
       }
     }
 
+    // C. EXCLUSIVE ALERT: DETECT PLAYER ABANDONMENT (A player dropped out of the room)
+    const currentPlayerNames = remotePlayers.map((p) => p.name);
+    const departedPlayer = lastSeenPlayerNamesRef.current.find(
+      (name) => !currentPlayerNames.includes(name)
+    );
+    
+    if (departedPlayer) {
+      console.log("🚨 [ABANDONMENT DETECTED]:", departedPlayer);
+      setAbandonedPlayerName(departedPlayer);
+    }
+
     // --- SYNC Baseline Refs for Next React Render Cycle ---
     lastSeenDeckSize.current = deck.length;
     lastSeenDiscardPileCount.current = discardPile.length;
@@ -237,6 +308,7 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
     });
     lastSeenPlayersHands.current = nextHands;
     lastSeenMeldsCount.current = nextMelds;
+    lastSeenPlayerNamesRef.current = currentPlayerNames;
   }, [deck, discardPile, remotePlayers, turnIndex]);
 
   return (
@@ -295,15 +367,23 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
         <h3 className="text-[10px] font-medium tracking-[0.25em] text-zinc-400 uppercase">
           Meja Utama
         </h3>
-        <button
-          onClick={() => {
-            initGame();
-            setView("landing");
-          }}
-          className="text-[9px] font-mono text-zinc-600 hover:text-zinc-400 tracking-widest uppercase transition-colors cursor-pointer"
-        >
-          Ulangi
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={triggerFinishGameDialog}
+            className="text-[9px] font-bold font-mono bg-emerald-950 border border-emerald-800/60 text-emerald-400 hover:bg-emerald-900/30 px-2.5 py-1 rounded tracking-widest uppercase transition-all cursor-pointer shadow-[0_0_15px_rgba(16,185,129,0.15)] active:scale-95"
+          >
+            Selesaikan
+          </button>
+          <button
+            onClick={() => {
+              initGame();
+              setView("landing");
+            }}
+            className="text-[9px] font-mono text-zinc-600 hover:text-zinc-400 tracking-widest uppercase transition-colors cursor-pointer"
+          >
+            Ulangi
+          </button>
+        </div>
       </div>
 
       {/* Table layout */}
@@ -554,6 +634,142 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
                 />
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* IMMERSIVE GAME OVER & SCOREBOARD STANDINGS OVERLAY */}
+      {gameOverData && (
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
+          {/* Glassmorphic Modal Container */}
+          <div className="w-full max-w-md bg-[#03100c]/90 border border-emerald-900/30 rounded-3xl shadow-[0_25px_70px_rgba(0,0,0,0.9)] p-6 relative overflow-hidden animate-scale-up">
+            {/* Emerald glow orb in background */}
+            <div className="absolute -top-24 -left-24 w-64 h-64 bg-emerald-600/10 rounded-full blur-3xl pointer-events-none" />
+            <div className="absolute -bottom-24 -right-24 w-64 h-64 bg-emerald-600/10 rounded-full blur-3xl pointer-events-none" />
+            
+            {/* Top Trophy & Title Header */}
+            <div className="flex flex-col items-center text-center mb-6 relative z-10">
+              <div className="w-16 h-16 rounded-full bg-emerald-950 border border-emerald-700/40 flex items-center justify-center shadow-[0_0_30px_rgba(16,185,129,0.2)] mb-3 animate-bounce">
+                <span className="text-3xl">🏆</span>
+              </div>
+              <span className="text-[9px] font-mono font-black text-emerald-500 uppercase tracking-[0.3em] leading-none mb-2">
+                Hasil Akhir Ronde
+              </span>
+              <h2 className="text-lg font-medium text-zinc-100 tracking-widest uppercase">
+                KLASEMEN PEMENANG
+              </h2>
+            </div>
+
+            {/* Standings List Table */}
+            <div className="space-y-2.5 mb-7 relative z-10">
+              {gameOverData.standings.map((entry, idx) => {
+                const isWinner = idx === 0;
+                return (
+                  <div 
+                    key={entry.name}
+                    className={`flex justify-between items-center px-4 py-3.5 rounded-xl border transition-all duration-300 ${
+                      isWinner
+                        ? "bg-emerald-950/30 border-emerald-700/40 shadow-[inset_0_0_20px_rgba(16,185,129,0.1)]"
+                        : "bg-zinc-950/50 border-zinc-900/80 hover:border-zinc-800"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      {/* Position Badge */}
+                      <div className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-[10px] border ${
+                        idx === 0
+                          ? "bg-amber-500/20 border-amber-500/60 text-amber-400"
+                          : idx === 1
+                          ? "bg-zinc-400/20 border-zinc-400/60 text-zinc-300"
+                          : idx === 2
+                          ? "bg-amber-800/20 border-amber-800/60 text-amber-600"
+                          : "bg-zinc-900 border-zinc-800 text-zinc-600"
+                      }`}>
+                        {idx + 1}
+                      </div>
+                      
+                      {/* Player Identity */}
+                      <div className="flex flex-col">
+                        <span className={`text-xs font-bold tracking-wide uppercase ${isWinner ? "text-emerald-400" : "text-zinc-200"}`}>
+                          {entry.name}
+                        </span>
+                        <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-wider">
+                          Ditangan: <span className={entry.roundPoints > 0 ? "text-red-500/80" : "text-emerald-500/80"}>+{entry.roundPoints}</span>
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Cumulative Score Badge */}
+                    <div className="flex flex-col items-end">
+                      <span className={`text-[14px] font-black font-mono ${isWinner ? "text-emerald-400" : "text-zinc-100"}`}>
+                        {entry.totalScore}
+                      </span>
+                      <span className="text-[7px] font-mono text-zinc-600 uppercase tracking-widest leading-none mt-0.5">
+                        Total Poin
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Footer Actions Grid */}
+            <div className="flex gap-3 relative z-10">
+              <button
+                disabled={isSubmittingFinish}
+                onClick={() => setGameOverData(null)}
+                className="flex-1 py-2.5 rounded-xl border border-zinc-800 hover:border-zinc-700 text-zinc-500 hover:text-zinc-300 text-[10px] font-mono font-bold tracking-widest uppercase transition-all cursor-pointer disabled:opacity-50"
+              >
+                Batal
+              </button>
+              <button
+                disabled={isSubmittingFinish}
+                onClick={handleConfirmFinish}
+                className="flex-[2] bg-emerald-600 hover:bg-emerald-500 text-black py-2.5 rounded-xl text-[10px] font-black font-mono tracking-widest uppercase transition-all cursor-pointer shadow-[0_0_25px_rgba(16,185,129,0.3)] active:scale-95 hover:shadow-[0_0_35px_rgba(16,185,129,0.4)] disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isSubmittingFinish ? (
+                  <>
+                    <span className="w-3 h-3 border-2 border-black/30 border-t-black rounded-full animate-spin" />
+                    Memproses...
+                  </>
+                ) : (
+                  "Kirim & Ke Lobby"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* IMMERSIVE PLAYER ABANDONMENT WARNING POPUP */}
+      {abandonedPlayerName && (
+        <div className="fixed inset-0 z-[999999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
+          <div className="w-full max-w-xs bg-[#100303]/95 border border-red-950 rounded-2xl shadow-[0_25px_70px_rgba(220,38,38,0.15)] p-5 text-center relative overflow-hidden animate-scale-up">
+            {/* Red glow in background */}
+            <div className="absolute -top-16 -left-16 w-40 h-40 bg-red-600/10 rounded-full blur-3xl pointer-events-none" />
+            
+            {/* Warning Icon */}
+            <div className="w-12 h-12 rounded-full bg-red-950 border border-red-800/40 flex items-center justify-center shadow-[0_0_20px_rgba(239,68,68,0.15)] mb-3 mx-auto animate-pulse">
+              <span className="text-xl">🚨</span>
+            </div>
+            
+            <span className="text-[7px] font-mono font-black text-red-500 uppercase tracking-[0.35em] block leading-none mb-2">
+              Peringatan Meja
+            </span>
+            
+            <h3 className="text-xs font-bold text-zinc-100 uppercase tracking-widest mb-2">
+              PEMAIN TELAH KELUAR
+            </h3>
+            
+            <p className="text-[9px] font-mono text-zinc-400 leading-relaxed uppercase tracking-wide mb-5 px-2">
+              Pemain <b className="text-red-400 font-bold">"{abandonedPlayerName}"</b> telah menyerah dan meninggalkan ruangan.
+            </p>
+            
+            <button
+              onClick={() => setAbandonedPlayerName(null)}
+              className="w-full bg-red-950 hover:bg-red-900/40 border border-red-800/60 text-red-400 py-2 rounded-xl text-[9px] font-black font-mono tracking-widest uppercase transition-all active:scale-95 shadow-[0_0_15px_rgba(239,68,68,0.1)] cursor-pointer"
+            >
+              Oke, Lanjutkan
+            </button>
           </div>
         </div>
       )}
