@@ -1,42 +1,48 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import PlayingCard from "./components/PlayingCard";
-import SortableCardWrapper from "./components/SortableCardWrapper";
-import { Card, createDeck, shuffleDeck, sortHand, canDrawDiscardCard, getCardPoints } from "./utils/gameLogic";
+import React, { useState, useEffect, useRef } from "react";
+import { Card, createDeck, shuffleDeck, sortHand, canDrawDiscardCard, getCardPoints, isSet, isRun } from "./utils/gameLogic";
 import { supabase } from "./utils/supabaseClient";
 
-// Drag and drop sorting imports
-import {
-  DndContext,
-  closestCenter,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  DragEndEvent
-} from "@dnd-kit/core";
-import {
-  arrayMove,
-  SortableContext,
-  rectSortingStrategy
-} from "@dnd-kit/sortable";
+// Import View Komponen Modular Baru
+import LandingView from "./components/views/LandingView";
+import HostLobbyView from "./components/views/HostLobbyView";
+import PlayerLobbyView from "./components/views/PlayerLobbyView";
+import HostGameBoardView from "./components/views/HostGameBoardView";
+import PlayerGameBoardView from "./components/views/PlayerGameBoardView";
 
-interface RemotePlayer {
-  name: string;
-  hand: Card[];
-  isHost: boolean;
-  hasDrawn: boolean;
-}
+// Import Modals
+import LeaderboardModal from "./components/modals/LeaderboardModal";
+import FloatingSocialDeck from "./components/modals/FloatingSocialDeck";
 
-interface RemoteGameState {
-  status: "waiting" | "playing";
-  deck: Card[];
-  discard_pile: Card[];
-  players: RemotePlayer[];
-  turn_index: number;
-}
+// Import Shared Game Types
+import { RemotePlayer, RemoteGameState, ViewState, ChatMessage } from "./types/game";
 
-type ViewState = "landing" | "host_lobby" | "host_game" | "player_lobby" | "player_game";
+// Utility Cerdas: Merekonsiliasi kartu tangan lokal pemain dengan data dari server.
+// Ini MENCEGAH kartu teracak kembali otomatis ketika ada sinkronisasi websocket/polling,
+// dengan cara menghormati URUTAN array yang dibuat secara lokal oleh fitur Drag-and-Drop.
+const reconcilePlayerHand = (currentLocal: Card[], incomingServer: Card[]): Card[] => {
+  if (!incomingServer || incomingServer.length === 0) return [];
+  if (!currentLocal || currentLocal.length === 0) return incomingServer;
+  
+  const serverIdMap = new Map(incomingServer.map(c => [c.id, c]));
+  
+  // 1. Pertahankan kartu lokal yang masih ada di server (Menjaga URUTAN Drag-and-Drop)
+  const preservedLocalOrdered = currentLocal.filter(c => serverIdMap.has(c.id));
+  
+  // 2. Cari kartu baru di server yang belum tercatat di lokal kita (Misal baru Ambil/Draw)
+  const localIdSet = new Set(currentLocal.map(c => c.id));
+  const newCards = incomingServer.filter(c => !localIdSet.has(c.id));
+  
+  // 3. Gabungkan: Urutan lokal + Kartu baru ditaruh paling kanan/akhir
+  const reconciled = [...preservedLocalOrdered, ...newCards];
+  
+  // Jaring pengaman integritas data
+  if (reconciled.length !== incomingServer.length) {
+    return incomingServer;
+  }
+  return reconciled;
+};
 
 export default function Home() {
   const [view, setView] = useState<ViewState>("landing");
@@ -44,6 +50,7 @@ export default function Home() {
   const [playerName, setPlayerName] = useState("");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showRules, setShowRules] = useState(false);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [fireTaunt, setFireTaunt] = useState<{ active: boolean, sender: string | null }>({ active: false, sender: null });
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   
@@ -53,32 +60,22 @@ export default function Home() {
   const [activeTurnIndex, setActiveTurnIndex] = useState<number>(0);
   const [isHostRole, setIsHostRole] = useState<boolean>(false);
 
+  // --- LOBBY INTERACTIVE TAUNTS ---
+  const [activeTauntOverlay, setActiveTauntOverlay] = useState<{ sender: string; emoji: string } | null>(null);
+  const lastSeenTauntTime = useRef<number>(0);
+
   // --- GAME STATE ---
   const [deck, setDeck] = useState<Card[]>([]);
   const [discardPile, setDiscardPile] = useState<Card[]>([]); // Index 0 is the LATEST discard
   const [playerHand, setPlayerHand] = useState<Card[]>([]);
   const [hasDrawnThisTurn, setHasDrawnThisTurn] = useState(false);
   
-  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [selectedDiscardIndex, setSelectedDiscardIndex] = useState<number | null>(null);
+  
+  // --- INTEGRATED SOCIAL DECK CHAT STATE ---
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
-  // --- DRAG AND DROP SENSORS ---
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: {
-        distance: 8,
-      },
-    })
-  );
 
-  const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event;
-    if (over && active.id !== over.id) {
-      const activeIndex = playerHand.findIndex((c) => c.id === active.id);
-      const overIndex = playerHand.findIndex((c) => c.id === over.id);
-      setPlayerHand(arrayMove(playerHand, activeIndex, overIndex));
-    }
-  };
 
   // Derived backward-compatible opponents state from active Remote Players!
   const bots = remotePlayers
@@ -93,49 +90,80 @@ export default function Home() {
   // ==========================================
 
   const subscribeToRoom = (code: string, myName: string) => {
-    // Unsubscribe any potential existing channels
-    supabase.removeAllChannels();
+    // 1. Bersihkan channel lama secara aman (Jangan biarkan error mematikan aplikasi)
+    try {
+      supabase.removeAllChannels().catch((e) => {
+        console.warn("WebSocket disconnect skipped:", e.message);
+      });
+    } catch (err) {
+      console.warn("Supabase cleanup failed silently:", err);
+    }
 
-    const channel = supabase
-      .channel(`channel_${code}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "rooms",
-          filter: `room_code=eq.${code.toUpperCase()}`,
-        },
-        (payload) => {
-          const newState = payload.new.game_state as RemoteGameState;
-          if (newState) {
-            setRemotePlayers(newState.players);
-            setGameStatus(newState.status);
-            setActiveTurnIndex(newState.turn_index);
-            setDeck(newState.deck);
-            setDiscardPile(newState.discard_pile);
-
-            // Smart auto-routing view states based on database updates
-            setView((currView) => {
-              if (newState.status === "playing") {
-                if (currView === "player_lobby") return "player_game";
-                if (currView === "host_lobby") return "host_game";
-              }
-              return currView;
-            });
+    // 2. Coba bangun langganan WebSocket (Bungkus try-catch untuk jaring pengaman total)
+    try {
+      const channel = supabase
+        .channel(`channel_${code}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*", // Listen to all actions for maximum robustness
+            schema: "public",
+            table: "rooms",
+          },
+          (payload) => {
+            console.log("🔥 REALTIME EVENT RECEIVED:", payload);
             
-            // Find local player's real-time server reference to update their hand
-            const serverMe = newState.players.find(p => p.name.toUpperCase() === myName.toUpperCase());
-            if (serverMe) {
-              setPlayerHand(serverMe.hand);
-              setHasDrawnThisTurn(serverMe.hasDrawn);
+            // Bulletproof Application-Level Filtering!
+            // Ensures real-time updates bypass strict Postgres WAL replica requirements
+            const incomingRoom = payload.new as { room_code: string; game_state: RemoteGameState };
+            
+            if (incomingRoom && incomingRoom.room_code === code.toUpperCase()) {
+              console.log("🎯 MATCHING ROOM FOUND! Applying State...");
+              const newState = incomingRoom.game_state;
+              if (newState) {
+                setRemotePlayers(newState.players);
+                setGameStatus(newState.status);
+                setActiveTurnIndex(newState.turn_index);
+                setDeck(newState.deck);
+                setDiscardPile(newState.discard_pile);
+                setChatMessages(newState.chat_messages || []);
+
+                // Detect and trigger active interactive lobby taunts!
+                if (newState.taunt && newState.taunt.timestamp > lastSeenTauntTime.current) {
+                  lastSeenTauntTime.current = newState.taunt.timestamp;
+                  setActiveTauntOverlay({ sender: newState.taunt.sender, emoji: newState.taunt.emoji });
+                  // Clean up animation overlay after 2.5s
+                  setTimeout(() => setActiveTauntOverlay(null), 2500);
+                }
+
+                // Smart auto-routing view states based on database updates
+                setView((currView) => {
+                  if (newState.status === "playing") {
+                    if (currView === "player_lobby") return "player_game";
+                    if (currView === "host_lobby") return "host_game";
+                  }
+                  return currView;
+                });
+                
+                // Find local player's real-time server reference to update their hand
+                const serverMe = newState.players.find(p => p.name.toUpperCase() === myName.toUpperCase());
+                if (serverMe) {
+                  setPlayerHand((current) => reconcilePlayerHand(current, serverMe.hand));
+                  setHasDrawnThisTurn(serverMe.hasDrawn);
+                }
+              }
+            } else {
+              console.log("⚠️ Ignored Event (Non-Matching Room Code)");
             }
           }
-        }
-      )
-      .subscribe();
+        )
+        .subscribe();
 
-    return channel;
+      return channel;
+    } catch (err) {
+      console.warn("💡 JALUR WEBSOCKET TERBLOKIR! Otomatis beralih ke HTTPS Polling Highway...");
+      return null;
+    }
   };
 
   const updateRemoteRoom = async (newGameState: RemoteGameState) => {
@@ -161,7 +189,7 @@ export default function Home() {
       status: "waiting",
       deck: [],
       discard_pile: [],
-      players: [{ name: "Host", hand: [], isHost: true, hasDrawn: false }],
+      players: [{ name: "Host", hand: [], melds: [], isHost: true, hasDrawn: false, score: 0 }],
       turn_index: 0
     };
 
@@ -171,6 +199,12 @@ export default function Home() {
       
     if (!error) {
       setRemotePlayers(initialState.players);
+      
+      // Persist session tokens to guard against unexpected page refreshes!
+      localStorage.setItem("rummy_room_code", newCode);
+      localStorage.setItem("rummy_player_name", "Host");
+      localStorage.setItem("rummy_is_host", "true");
+
       subscribeToRoom(newCode, "Host");
       setView("host_lobby");
     } else {
@@ -212,7 +246,7 @@ export default function Home() {
 
     const updatedPlayersList = [
       ...liveState.players,
-      { name: targetName, hand: [], isHost: false, hasDrawn: false }
+      { name: targetName, hand: [], melds: [], isHost: false, hasDrawn: false, score: 0 }
     ];
 
     const nextState: RemoteGameState = {
@@ -229,6 +263,12 @@ export default function Home() {
       setRoomCode(targetCode);
       setPlayerName(targetName);
       setRemotePlayers(updatedPlayersList);
+      
+      // Persist session tokens to guard against unexpected page refreshes!
+      localStorage.setItem("rummy_room_code", targetCode);
+      localStorage.setItem("rummy_player_name", targetName);
+      localStorage.setItem("rummy_is_host", "false");
+
       subscribeToRoom(targetCode, targetName);
       setView("player_lobby");
     } else {
@@ -243,16 +283,18 @@ export default function Home() {
     
     // Distribute 7 cards to EACH connected remote player device (skipping Spectator Host)
     const updatedRemotePlayers = remotePlayers.map((p) => {
-      if (p.isHost) return { ...p, hand: [], hasDrawn: false };
+      if (p.isHost) return { ...p, hand: [], melds: [], hasDrawn: false };
       return {
         ...p,
         hand: freshDeck.splice(0, 7),
+        melds: [],
         hasDrawn: false
       };
     });
 
     // Push first card to active discard pile
-    const firstDiscard = freshDeck.splice(0, 1);
+    const drawnFirst = freshDeck.splice(0, 1)[0];
+    const firstDiscard = [{ ...drawnFirst, thrownBy: "Dealer" }];
 
     const finalReadyState: RemoteGameState = {
       status: "playing",
@@ -264,6 +306,17 @@ export default function Home() {
 
     // Write state update to Supabase - will auto sync via postgres channels!
     await updateRemoteRoom(finalReadyState);
+
+    // ==========================================
+    // OPTIMISTIC LOCAL UI UPDATE
+    // ==========================================
+    // Melompati jeda polling agar Host seketika masuk ke layar meja game!
+    setRemotePlayers(finalReadyState.players);
+    setGameStatus(finalReadyState.status);
+    setActiveTurnIndex(finalReadyState.turn_index);
+    setDeck(finalReadyState.deck);
+    setDiscardPile(finalReadyState.discard_pile);
+    setView("host_game");
   };
 
   // Initialize and Start Game
@@ -271,24 +324,15 @@ export default function Home() {
     const rawDeck = createDeck();
     const shuffled = shuffleDeck(rawDeck);
     const dealtHand = shuffled.splice(0, 7);
-    const initialDiscard = shuffled.splice(0, 3);
+    const initialDiscard = shuffled.splice(0, 3).map(c => ({ ...c, thrownBy: "Dealer" }));
     
     setDeck(shuffled);
     setPlayerHand(dealtHand);
     setDiscardPile(initialDiscard);
     setHasDrawnThisTurn(false);
-    setSelectedCardId(null);
     setSelectedDiscardIndex(null);
 
-    // Generate Room Code if missing
-    if (!roomCode) {
-      const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-      let newCode = "";
-      for (let i = 0; i < 4; i++) {
-        newCode += chars.charAt(Math.floor(Math.random() * chars.length));
-      }
-      setRoomCode(newCode);
-    }
+
   };
 
   const toggleFullscreen = () => {
@@ -310,8 +354,91 @@ export default function Home() {
     }
   };
 
+  // --- HYDRATED RESILIENT SESSION RESTORER ---
+  const restoreSessionFromLocalStorage = async () => {
+    if (typeof window === "undefined") return;
+    
+    const savedRoom = localStorage.getItem("rummy_room_code");
+    const savedName = localStorage.getItem("rummy_player_name");
+    const savedRoleIsHost = localStorage.getItem("rummy_is_host") === "true";
+
+    if (!savedRoom || !savedName) return;
+
+    console.log("♻️ [SESSION RESTORE] Checking persistence tokens:", savedRoom, "for", savedName);
+    
+    // Double-check the Supabase engine to ensure room STILL exists!
+    const { data, error } = await supabase
+      .from("rooms")
+      .select("game_state")
+      .eq("room_code", savedRoom.toUpperCase())
+      .maybeSingle();
+
+    if (error || !data) {
+      console.warn("⚠️ [RESTORE ABORT]: Dead session tokens detected. Pruning localStorage.");
+      localStorage.removeItem("rummy_room_code");
+      localStorage.removeItem("rummy_player_name");
+      localStorage.removeItem("rummy_is_host");
+      return;
+    }
+
+    const liveState = data.game_state as RemoteGameState;
+    
+    // Hydrate essential operational states
+    setRoomCode(savedRoom.toUpperCase());
+    setPlayerName(savedName);
+    setIsHostRole(savedRoleIsHost);
+    
+    // Hydrate baseline arrays immediately to prevent visual flashing
+    setRemotePlayers(liveState.players);
+    setGameStatus(liveState.status);
+    setDeck(liveState.deck);
+    setDiscardPile(liveState.discard_pile);
+    setChatMessages(liveState.chat_messages || []);
+    setActiveTurnIndex(liveState.turn_index);
+
+    // For players, pre-hydrate initial hand
+    const serverMe = liveState.players.find(p => p.name.toUpperCase() === savedName.toUpperCase());
+    if (serverMe) {
+      setPlayerHand(serverMe.hand);
+      setHasDrawnThisTurn(serverMe.hasDrawn);
+    }
+
+    // Step 4: Set appropriate Routing View 
+    if (liveState.status === "playing") {
+      setView(savedRoleIsHost ? "host_game" : "player_game");
+    } else {
+      setView(savedRoleIsHost ? "host_lobby" : "player_lobby");
+    }
+
+    // Step 5: Re-subscribe dynamic real-time websocket stream
+    subscribeToRoom(savedRoom.toUpperCase(), savedName);
+    
+    setToastMsg("Kembali terhubung ke meja permainan! ⚡🏆");
+    setTimeout(() => setToastMsg(null), 3000);
+  };
+
+  // --- MANUALLY TRIGGERED CLEAN EXIT ---
+  const handleExitGame = (nextView: ViewState = "landing") => {
+    console.log("🧹 [CLEAN EXIT]: Clearing persistence tokens and closing channels.");
+    localStorage.removeItem("rummy_room_code");
+    localStorage.removeItem("rummy_player_name");
+    localStorage.removeItem("rummy_is_host");
+    
+    try {
+      supabase.removeAllChannels();
+    } catch (err) {
+      console.warn("Silent WS disconnect skipping:", err);
+    }
+
+    setView(nextView);
+  };
+
+
   useEffect(() => {
     initGame();
+    
+    // Attempt to restore session if active persistent tokens exist in cache!
+    restoreSessionFromLocalStorage();
     
     // Deep link QR auto join detection
     if (typeof window !== "undefined") {
@@ -335,10 +462,77 @@ export default function Home() {
     }
   }, []);
 
+  // ==========================================
+  // RESILIENT FALLBACK POLLING ENGINE
+  // ==========================================
+  // Bertindak sebagai jembatan data cadangan yang tangguh jika koneksi WebSocket
+  // terblokir oleh pemeliharaan infrastruktur Supabase (Singapore) malam ini!
+  useEffect(() => {
+    if (!roomCode || !playerName) return;
+
+    const fallbackPoll = setInterval(async () => {
+      // Hanya lakukan polling jika kita sedang aktif di dalam room/game
+      if (view !== "landing") {
+        console.log(`🔍 [POLLER] Mengecek data untuk Room: ${roomCode.toUpperCase()}...`);
+        
+        const { data, error } = await supabase
+          .from("rooms")
+          .select("game_state")
+          .eq("room_code", roomCode.toUpperCase())
+          .maybeSingle();
+
+        if (error) {
+          console.error("❌ [POLLER ERROR]:", error.message);
+          return;
+        }
+
+        if (data && data.game_state) {
+          const serverState = data.game_state as RemoteGameState;
+          console.log(`✅ [POLLER SUCCESS] Menemukan data! Jumlah Pemain di Server: ${serverState.players.length}`);
+          
+          // Sinkronisasi paksa data state server ke state lokal secara periodik
+          setRemotePlayers(serverState.players);
+          setGameStatus(serverState.status);
+          setActiveTurnIndex(serverState.turn_index);
+          setDeck(serverState.deck);
+          setDiscardPile(serverState.discard_pile);
+          setChatMessages(serverState.chat_messages || []);
+
+          // Sinkronisasi interaktif taunt lobby via polling cadangan!
+          if (serverState.taunt && serverState.taunt.timestamp > lastSeenTauntTime.current) {
+            lastSeenTauntTime.current = serverState.taunt.timestamp;
+            setActiveTauntOverlay({ sender: serverState.taunt.sender, emoji: serverState.taunt.emoji });
+            setTimeout(() => setActiveTauntOverlay(null), 2500);
+          }
+
+          // Auto-routing view jika status game berubah menjadi bermain
+          setView((currView) => {
+            if (serverState.status === "playing") {
+              if (currView === "player_lobby") return "player_game";
+              if (currView === "host_lobby") return "host_game";
+            }
+            return currView;
+          });
+
+          // Sinkronisasi kartu tangan milik pemain aktif
+          const serverMe = serverState.players.find(p => p.name.toUpperCase() === playerName.toUpperCase());
+          if (serverMe) {
+            setPlayerHand((current) => reconcilePlayerHand(current, serverMe.hand));
+            setHasDrawnThisTurn(serverMe.hasDrawn);
+          }
+        } else {
+          console.warn("⚠️ [POLLER]: Data tidak ditemukan di server untuk room ini.");
+        }
+      }
+    }, 2500); // Cek setiap 2.5 detik sekali
+
+    return () => clearInterval(fallbackPoll);
+  }, [roomCode, view, playerName]);
+
   // Action Handlers (Multiplayer Synced)
-  const drawFromStock = async () => {
-    if (hasDrawnThisTurn) return;
-    if (deck.length === 0) return;
+  const drawFromStock = async (): Promise<Card | null> => {
+    if (hasDrawnThisTurn) return null;
+    if (deck.length === 0) return null;
     
     // Validate active turn
     const playingPlayers = remotePlayers.filter(p => !p.isHost);
@@ -347,7 +541,7 @@ export default function Home() {
     if (myIdx !== activeTurnIndex) {
       setToastMsg("Tunggu! Bukan Giliran Anda ⏰");
       setTimeout(() => setToastMsg(null), 2000);
-      return;
+      return null;
     }
 
     const updatedDeck = [...deck];
@@ -370,7 +564,16 @@ export default function Home() {
     };
 
     await updateRemoteRoom(updatedState);
+    
+    // OPTIMISTIC LOCAL UPDATE:
+    // Memberikan sensasi mengambil kartu instan tanpa jeda jaringan!
+    setDeck(updatedDeck);
+    setPlayerHand(updatedHand);
+    setHasDrawnThisTurn(true);
+    setRemotePlayers(nextPlayers);
+    
     setSelectedDiscardIndex(null);
+    return drawnCard;
   };
 
   const drawFromDiscardAtIndex = async (index: number) => {
@@ -409,18 +612,27 @@ export default function Home() {
     };
 
     await updateRemoteRoom(updatedState);
+    
+    // OPTIMISTIC LOCAL UPDATE:
+    // Mengambil kartu buangan instan tanpa lag jaringan!
+    setDiscardPile(nextDiscard);
+    setPlayerHand(updatedHand);
+    setHasDrawnThisTurn(true);
+    setRemotePlayers(nextPlayers);
+    
     setSelectedDiscardIndex(null);
   };
 
-  const discardSelected = async () => {
-    if (!selectedCardId) return;
+  const discardSelected = async (cardId: string) => {
+    if (!cardId) return;
     if (!hasDrawnThisTurn) return;
 
-    const targetCard = playerHand.find(c => c.id === selectedCardId);
+    const targetCard = playerHand.find(c => c.id === cardId);
     if (!targetCard) return;
 
-    const updatedHand = playerHand.filter(c => c.id !== selectedCardId);
-    const updatedDiscard = [targetCard, ...discardPile];
+    const cardWithAttribution = { ...targetCard, thrownBy: playerName || "Pemain" };
+    const updatedHand = playerHand.filter(c => c.id !== cardId);
+    const updatedDiscard = [cardWithAttribution, ...discardPile];
 
     // Cycle to the next active player's turn index (skipping spectator Host)
     const playingPlayers = remotePlayers.filter(p => !p.isHost);
@@ -442,7 +654,136 @@ export default function Home() {
     };
 
     await updateRemoteRoom(updatedState);
-    setSelectedCardId(null);
+    
+    // OPTIMISTIC LOCAL UPDATE:
+    // Membuang kartu instan dan langsung mengalihkan giliran tanpa lag!
+    setPlayerHand(updatedHand);
+    setDiscardPile(updatedDiscard);
+    setRemotePlayers(nextPlayers);
+    setActiveTurnIndex(nextTurnIdx);
+    setHasDrawnThisTurn(false);
+  };
+
+  const meldSelectedCards = async (cardIds: string[]): Promise<boolean> => {
+    if (cardIds.length < 3) return false;
+    
+    const selectedCards = playerHand.filter(c => cardIds.includes(c.id));
+    const isValidCombination = isSet(selectedCards) || isRun(selectedCards);
+    
+    if (!isValidCombination) {
+      setToastMsg("Kombinasi kartu tidak sah! ⚠️");
+      setTimeout(() => setToastMsg(null), 2500);
+      return false;
+    }
+
+    // Aturan Indonesia Remi: Harus ada Seri di meja (melds) sebelum boleh menurunkan Set (Kembar)!
+    const myRemote = remotePlayers.find(p => p.name.toUpperCase() === playerName.toUpperCase());
+    const myExistingMelds = myRemote?.melds || [];
+    const hasAnyExistingRunInMelds = myExistingMelds.some(m => isRun(m));
+    const attemptIsRun = isRun(selectedCards);
+
+    if (!hasAnyExistingRunInMelds && !attemptIsRun) {
+      setToastMsg("Wajib menurunkan SERI/URUTAN pertama kali! 🇮🇩");
+      setTimeout(() => setToastMsg(null), 3000);
+      return false;
+    }
+
+    const updatedHand = playerHand.filter(c => !cardIds.includes(c.id));
+    const updatedMelds = [...myExistingMelds, selectedCards];
+
+    const nextPlayers = remotePlayers.map((p) => {
+      if (p.name.toUpperCase() === playerName.toUpperCase()) {
+        return { ...p, hand: updatedHand, melds: updatedMelds };
+      }
+      return p;
+    });
+
+    const updatedState: RemoteGameState = {
+      status: "playing",
+      deck: deck,
+      discard_pile: discardPile,
+      players: nextPlayers,
+      turn_index: activeTurnIndex
+    };
+
+    await updateRemoteRoom(updatedState);
+
+    // Optimistic Local Update
+    setPlayerHand(updatedHand);
+    setRemotePlayers(nextPlayers);
+    setToastMsg("🎉 Sukses Menurunkan Kartu!");
+    setTimeout(() => setToastMsg(null), 2000);
+    
+    return true;
+  };
+
+  // ==========================================
+  // LOBBY INTERACTION ENGINE
+  // ==========================================
+  const sendLobbyEmoji = async (emoji: string) => {
+    const { data, error } = await supabase
+      .from("rooms")
+      .select("game_state")
+      .eq("room_code", roomCode.toUpperCase())
+      .maybeSingle();
+
+    if (!error && data && data.game_state) {
+      const activeState = data.game_state as RemoteGameState;
+      
+      const updatedState: RemoteGameState = {
+        ...activeState,
+        taunt: {
+          sender: playerName,
+          emoji: emoji,
+          timestamp: Date.now()
+        }
+      };
+
+      await updateRemoteRoom(updatedState);
+
+      // Local Optimistic Trigger: Tampilkan emoji instan di layar sendiri!
+      setActiveTauntOverlay({ sender: playerName, emoji });
+      setTimeout(() => setActiveTauntOverlay(null), 2500);
+    }
+  };
+
+  // --- CHAT & PHOTO REALTIME TRANSMITTER ---
+  const sendChatMessage = async (text?: string, photoBase64?: string, recipient?: string) => {
+    if (!roomCode || !playerName) return;
+    if (!text && !photoBase64) return;
+
+    const { data, error } = await supabase
+      .from("rooms")
+      .select("game_state")
+      .eq("room_code", roomCode.toUpperCase())
+      .maybeSingle();
+
+    if (!error && data) {
+      const activeState = data.game_state as RemoteGameState;
+      const currentHistory = activeState.chat_messages || [];
+      
+      const newMessage: ChatMessage = {
+        id: Math.random().toString(36).substr(2, 9),
+        sender: playerName,
+        recipient: recipient || "All",
+        text: text?.trim(),
+        photoBase64: photoBase64,
+        timestamp: Date.now()
+      };
+
+      // Circular Buffer: Jaga payload tetap ringan, simpan hanya 15 pesan terakhir
+      const updatedHistory = [...currentHistory, newMessage].slice(-15);
+
+      const updatedState: RemoteGameState = {
+        ...activeState,
+        chat_messages: updatedHistory
+      };
+
+      await updateRemoteRoom(updatedState);
+      
+      // Local Optimistic Sync
+      setChatMessages(updatedHistory);
+    }
   };
 
   // Funny Interactive Taunt with Bot Retaliation
@@ -463,8 +804,34 @@ export default function Home() {
     }, delay);
   };
 
+  const syncHandSort = async (newSortedHand: Card[]) => {
+    // Update lokal instan (Optimistik)
+    setPlayerHand(newSortedHand);
+    
+    const nextPlayers = remotePlayers.map((p) => {
+      if (p.name.toUpperCase() === playerName.toUpperCase()) {
+        return { ...p, hand: newSortedHand };
+      }
+      return p;
+    });
+
+    const updatedState: RemoteGameState = {
+      status: gameStatus,
+      deck: deck,
+      discard_pile: discardPile,
+      players: nextPlayers,
+      turn_index: activeTurnIndex
+    };
+
+    // Kirim ke database Supabase
+    updateRemoteRoom(updatedState).catch((e) => console.error("⚠️ [SORT SYNC ERROR]:", e.message));
+    
+    setRemotePlayers(nextPlayers);
+  };
+
   const sortMyHand = () => {
-    setPlayerHand(sortHand(playerHand));
+    const sorted = sortHand(playerHand);
+    syncHandSort(sorted);
   };
 
   // Derived Turn Tracking Variables
@@ -473,7 +840,7 @@ export default function Home() {
   const isMyTurn = currentMyIdx === activeTurnIndex;
   const activePlayerName = activePlayingPlayers[activeTurnIndex]?.name || "...";
 
-  const circularDiscards = discardPile.slice(0, 7);
+  const circularDiscards = discardPile;
   
   const selectedDiscardCard = selectedDiscardIndex !== null ? circularDiscards[selectedDiscardIndex] : null;
   const isDiscardSelectionValid = selectedDiscardCard ? canDrawDiscardCard(selectedDiscardCard, playerHand) : false;
@@ -494,11 +861,33 @@ export default function Home() {
   return (
     <main className="min-h-screen text-zinc-200 relative flex flex-col items-center justify-center p-4 overflow-hidden bg-[#041611]">
       
+      {/* ========================================= */}
+      {/* GLOBAL REAL-TIME LOBBY TAUNT OVERLAY      */}
+      {/* ========================================= */}
+      {activeTauntOverlay && (
+        <div className="fixed inset-0 z-[99999] pointer-events-none flex items-center justify-center overflow-hidden select-none bg-[#041611]/10">
+          <div className="flex flex-col items-center justify-center animate-bounce duration-500">
+            {/* Giant Glowing Emoticon */}
+            <div className="text-[140px] sm:text-[180px] filter drop-shadow-[0_0_60px_rgba(16,185,129,0.4)] transition-all scale-110 select-none animate-pulse">
+              {activeTauntOverlay.emoji}
+            </div>
+            {/* Glowy Label Tag */}
+            <div className="mt-6 bg-[#09251d]/95 border border-emerald-700/50 shadow-[0_0_20px_rgba(6,78,59,0.4)] backdrop-blur-md px-5 py-2 rounded-full animate-fade-in">
+              <span className="text-[11px] font-mono tracking-[0.2em] text-emerald-400 uppercase font-semibold">
+                Reaksi {activeTauntOverlay.sender}: <b className="text-zinc-100 font-extrabold">SIAP TEMPUR!</b> 🎮
+              </span>
+            </div>
+          </div>
+          {/* Screen Flash effect */}
+          <div className="absolute inset-0 bg-emerald-500/5 animate-pulse mix-blend-overlay" />
+        </div>
+      )}
+      
       {/* Ambient Background */}
       <div className="absolute inset-0 pointer-events-none bg-radial from-[#08251d] to-[#041410] opacity-80" />
 
       {/* 0. IMMERSIVE MOBILE PORTRAIT ROTATION PROMPT */}
-      <div className="fixed inset-0 bg-[#041410] z-[999999] portrait-blocker flex-col items-center justify-center text-center p-8 select-none animate-fade-in overflow-hidden">
+      <div className="fixed inset-0 bg-[#041410] z-[999999] portrait-blocker text-center p-8 select-none animate-fade-in overflow-hidden">
         <div className="absolute inset-0 pointer-events-none bg-radial from-[#08251d] to-[#041410] opacity-95" />
         
         <div className="relative z-10 flex flex-col items-center">
@@ -552,6 +941,22 @@ export default function Home() {
           <path d="M12 2a7 7 0 0 0-7 7c0 2.3 1 4.4 2.6 5.9C8.5 15.8 9 16.9 9 18h6c0-1.1.5-2.2 1.4-3.1A7 7 0 0 0 12 2z" />
         </svg>
       </button>
+
+      {/* Global Leaderboard Action Button (👑 Crown) */}
+      <button 
+        onClick={() => setShowLeaderboard(true)}
+        className="fixed top-4 right-24 z-[9999] p-2 rounded-lg border border-zinc-800/60 bg-[#041611]/40 hover:bg-[#062118]/60 backdrop-blur-md hover:border-emerald-800/40 text-zinc-500 hover:text-emerald-400 cursor-pointer transition-all flex items-center justify-center group"
+        title="Klasemen Poin"
+      >
+        <span className="text-xs leading-none transition-transform group-hover:scale-110">👑</span>
+      </button>
+
+      {/* Global Leaderboard Modal Layer */}
+      <LeaderboardModal 
+        isOpen={showLeaderboard}
+        onClose={() => setShowLeaderboard(false)}
+        remotePlayers={remotePlayers}
+      />
 
       {/* ========================================= */}
       {/* GLOBAL RULES OVERLAY (MINIMALIST & LUXE) */}
@@ -646,529 +1051,87 @@ export default function Home() {
       {/* ========================================= */}
       {/* 1. LANDING VIEW (MINIMALIST)              */}
       {/* ========================================= */}
+      {/* ========================================= */}
+      {/* RENDER MODULAR GAME VIEWS                 */}
+      {/* ========================================= */}
       {view === "landing" && (
-        <div className="max-w-xs w-full bg-black/20 backdrop-blur-md rounded-2xl p-6 text-center relative z-10 border border-zinc-800/60 animate-fade-in">
-          <div className="mb-8 flex flex-col items-center">
-            <h1 className="text-3xl font-light tracking-[0.25em] text-zinc-100 uppercase">
-              Rummy
-            </h1>
-            <div className="h-[1px] w-12 bg-zinc-700 mt-3 opacity-50" />
-          </div>
-
-          <div className="space-y-4">
-            <button 
-              onClick={handleCreateRoom}
-              className="w-full py-2.5 rounded-lg border border-zinc-700 bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs font-medium tracking-widest transition-all uppercase cursor-pointer"
-            >
-              Buat Meja
-            </button>
-            
-            <div className="relative flex py-2 items-center">
-              <div className="flex-grow border-t border-zinc-800/50"></div>
-              <span className="flex-shrink mx-3 text-[9px] text-zinc-600 tracking-widest font-mono">ATAU</span>
-              <div className="flex-grow border-t border-zinc-800/50"></div>
-            </div>
-
-            <div className="space-y-2.5">
-              <input 
-                type="text" 
-                placeholder="NAMA KAMU" 
-                value={playerName}
-                onChange={(e) => setPlayerName(e.target.value)}
-                className="w-full bg-transparent border border-zinc-800 rounded-lg px-3 py-2 text-center text-zinc-200 text-xs font-light tracking-widest placeholder-zinc-600 focus:outline-none focus:border-zinc-600 transition-colors uppercase"
-              />
-              <input 
-                type="text" 
-                placeholder="KODE ROOM" 
-                maxLength={4}
-                value={roomCode}
-                onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
-                className="w-full bg-transparent border border-zinc-800 rounded-lg px-3 py-2 text-center text-zinc-200 text-xs font-medium tracking-[0.2em] placeholder-zinc-600 focus:outline-none focus:border-zinc-600 transition-colors uppercase"
-              />
-              <button 
-                onClick={() => handleJoinRoom(roomCode, playerName)}
-                className="w-full py-2.5 rounded-lg bg-zinc-100 hover:bg-zinc-200 text-zinc-950 text-xs font-medium tracking-widest transition-all uppercase cursor-pointer"
-              >
-                Gabung Game
-              </button>
-            </div>
-          </div>
-        </div>
+        <LandingView
+          roomCode={roomCode}
+          setRoomCode={setRoomCode}
+          playerName={playerName}
+          setPlayerName={setPlayerName}
+          handleCreateRoom={handleCreateRoom}
+          handleJoinRoom={handleJoinRoom}
+        />
       )}
 
-      {/* ========================================= */}
-      {/* 2. HOST LOBBY VIEW (MINIMALIST)          */}
-      {/* ========================================= */}
       {view === "host_lobby" && (
-        <div className="max-w-md w-full bg-black/20 backdrop-blur-md rounded-2xl p-6 relative z-10 border border-zinc-800/60">
-          <button onClick={() => setView("landing")} className="text-zinc-500 hover:text-zinc-300 mb-6 text-[10px] tracking-widest font-mono uppercase flex items-center gap-1 transition-colors">
-            Kembali
-          </button>
-          
-          <div className="text-center mb-6 flex flex-col items-center">
-            <span className="text-zinc-500 text-[9px] tracking-[0.2em] uppercase">Kode Room</span>
-            <div className="text-4xl font-light tracking-[0.3em] mt-1 mb-6 text-zinc-200">
-              {roomCode}
-            </div>
-
-            {/* Custom-Themed Minimalist QR Code Container */}
-            <div className="mb-5 p-3 rounded-2xl bg-[#09251d] border border-zinc-800/40 shadow-lg shadow-black/30 hover:scale-[1.02] transition-transform duration-300">
-              <img 
-                src={qrCodeUrl} 
-                alt="Scan to Join" 
-                className="w-32 h-32 rounded-lg object-cover"
-              />
-            </div>
-            
-            <span className="text-[8px] font-mono text-zinc-500 tracking-widest uppercase leading-none block mb-2">Pindai QR untuk Gabung</span>
-            <span className="text-[9px] text-emerald-600 font-mono tracking-[0.15em] uppercase animate-pulse leading-none block">Menunggu Pemain</span>
-          </div>
-
-          <div className="grid grid-cols-1 gap-2 mb-6 max-h-[200px] overflow-y-auto no-scrollbar px-1">
-            {remotePlayers.map((p, idx) => (
-              <div key={idx} className="bg-[#061f19]/40 border border-emerald-900/20 rounded-lg px-4 py-2.5 flex items-center justify-between animate-fade-in shadow-sm">
-                <span className={`text-xs tracking-wider ${p.isHost ? "text-zinc-400 italic font-normal" : "text-zinc-200 font-light uppercase"}`}>
-                  {p.name} {p.isHost ? "(Spectator)" : ""}
-                </span>
-                <span className={`text-[8px] font-mono uppercase tracking-widest ${p.isHost ? "text-zinc-600" : "text-emerald-600 font-bold"}`}>
-                  {p.isHost ? "Terhubung" : "Siap"}
-                </span>
-              </div>
-            ))}
-            
-            {remotePlayers.length <= 1 && (
-              <div className="text-center py-6 border border-dashed border-zinc-900 rounded-lg bg-black/10">
-                <span className="text-[9px] font-mono text-zinc-600 uppercase tracking-widest animate-pulse">
-                  Menunggu Pemain Bergabung...
-                </span>
-              </div>
-            )}
-          </div>
-
-          <button 
-            onClick={handleStartGame}
-            disabled={remotePlayers.length <= 1}
-            className={`w-full py-2.5 rounded-lg border text-xs font-medium tracking-widest transition-all uppercase cursor-pointer ${
-              remotePlayers.length <= 1
-                ? "bg-zinc-950 border-zinc-900 text-zinc-700 cursor-not-allowed opacity-60"
-                : "bg-zinc-900/80 border-zinc-700 hover:border-emerald-600/60 text-zinc-200 hover:bg-emerald-950/10 hover:text-emerald-400"
-            }`}
-          >
-            Mulai Game
-          </button>
-        </div>
+        <HostLobbyView
+          roomCode={roomCode}
+          qrCodeUrl={qrCodeUrl}
+          remotePlayers={remotePlayers}
+          handleStartGame={handleStartGame}
+          setView={handleExitGame}
+        />
       )}
 
-      {/* ========================================= */}
-      {/* 3. HOST GAME VIEW (CLEAN CIRCULAR TABLE)  */}
-      {/* ========================================= */}
       {view === "host_game" && (
-        <div className="w-full max-w-5xl h-[90vh] relative z-10 flex flex-col justify-between animate-fade-in">
-          
-          {/* Minimal Top Bar */}
-          <div className="flex justify-between items-center rounded-xl px-4 py-2.5 mx-auto w-full max-w-xl border border-zinc-800/50 bg-black/20 backdrop-blur-sm">
-            <div className="flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-zinc-600"></span>
-              <span className="font-mono text-[10px] text-zinc-500 tracking-wider uppercase">Room: <b className="text-zinc-300 font-normal">{roomCode}</b></span>
-            </div>
-            <h3 className="text-[10px] font-medium tracking-[0.25em] text-zinc-400 uppercase">Meja Utama</h3>
-            <button onClick={() => { initGame(); setView("landing"); }} className="text-[9px] font-mono text-zinc-600 hover:text-zinc-400 tracking-widest uppercase transition-colors">Ulangi</button>
-          </div>
-
-          {/* Table layout */}
-          <div className="flex-1 flex relative items-center justify-center">
-            
-            {/* Derived seat tracking list */}
-            {(() => {
-              const seatPlayers = remotePlayers.filter(p => !p.isHost);
-              
-              return (
-                <>
-                  {/* Player 2 (Top) */}
-                  <div className="absolute top-2 left-1/2 -translate-x-1/2 text-center z-20">
-                    <div className={`text-[10px] font-mono uppercase tracking-wider ${seatPlayers[1] ? 'text-zinc-300' : 'text-zinc-600 italic opacity-50'}`}>
-                      {seatPlayers[1] ? seatPlayers[1].name : "(Kursi Kosong)"}
-                    </div>
-                    {seatPlayers[1] && (
-                      <div className="flex gap-0.5 mt-1 justify-center opacity-40 scale-75">
-                        {[...Array(seatPlayers[1].hand.length)].map((_, i) => (
-                          <div key={i} className="w-3 h-5 rounded-sm bg-zinc-700 border border-zinc-800 shadow-sm" />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Player 3 (Left) */}
-                  <div className="absolute left-2 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1 z-20">
-                    <div className={`text-[10px] font-mono -rotate-90 mb-2 uppercase tracking-wider ${seatPlayers[2] ? 'text-zinc-300' : 'text-zinc-700 italic opacity-50'}`}>
-                      {seatPlayers[2] ? seatPlayers[2].name : "(Kosong)"}
-                    </div>
-                    {seatPlayers[2] && (
-                      <div className="text-xs bg-zinc-900 border border-zinc-800 text-zinc-500 rounded-full w-6 h-6 flex items-center justify-center font-mono">
-                        {seatPlayers[2].hand.length}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Player 4 (Right) */}
-                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1 z-20">
-                    <div className={`text-[10px] font-mono rotate-90 mb-2 uppercase tracking-wider ${seatPlayers[3] ? 'text-zinc-300' : 'text-zinc-700 italic opacity-50'}`}>
-                      {seatPlayers[3] ? seatPlayers[3].name : "(Kosong)"}
-                    </div>
-                    {seatPlayers[3] && (
-                      <div className="text-xs bg-zinc-900 border border-zinc-800 text-zinc-500 rounded-full w-6 h-6 flex items-center justify-center font-mono">
-                        {seatPlayers[3].hand.length}
-                      </div>
-                    )}
-                  </div>
-                </>
-              );
-            })()}
-
-            {/* CLEAN CIRCULAR TABLE CONTAINER */}
-            <div className="w-[70vh] max-w-[480px] aspect-square rounded-full relative flex items-center justify-center border border-zinc-800/40 bg-black/10">
-              
-              {/* Subdued Orbit Ring */}
-              <div className="absolute inset-16 border border-zinc-900/50 border-dashed rounded-full pointer-events-none" />
-
-              {/* STOCK PILE IN THE DEAD CENTER */}
-              <div className="relative z-30 p-1.5 rounded-xl border border-zinc-800 bg-black/20 transition-transform">
-                <div className="relative w-16 h-24 md:w-20 md:h-28">
-                  <PlayingCard suit="hearts" value="A" faceUp={false} className="w-full h-full relative z-10 border-zinc-800 pointer-events-none bg-zinc-900" />
-                  
-                  <div className="absolute -bottom-2 -right-2 z-20 bg-zinc-800 text-zinc-300 px-1.5 py-0.5 rounded text-[9px] border border-zinc-700 font-mono font-normal">
-                    {deck.length}
-                  </div>
-                </div>
-              </div>
-
-              {/* DISCARD PILE CIRCULAR */}
-              {circularDiscards.map((card, index) => {
-                const angleStep = 360 / 7;
-                const angle = index * angleStep - 90; 
-                const radius = 135; // Smaller elegant orbit
-                
-                const style = {
-                  transform: `rotate(${angle}deg) translateY(-${radius}px) rotate(${-angle}deg)`,
-                  transition: "all 0.4s ease",
-                  zIndex: 20 - index,
-                  opacity: 1 - (index * 0.12),
-                };
-
-                return (
-                  <div 
-                    key={card.id} 
-                    className="absolute origin-center scale-65 md:scale-75 transition-transform cursor-pointer"
-                    style={style}
-                  >
-                    <PlayingCard 
-                      suit={card.suit} 
-                      value={card.value} 
-                      className={`border ${index === 0 ? 'border-zinc-400 shadow-lg' : 'border-zinc-700/50'}`} 
-                    />
-                    
-                    <div className={`absolute -top-1.5 -left-1.5 w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-mono border ${index === 0 ? 'bg-zinc-200 text-zinc-900 border-zinc-300' : 'bg-zinc-900 text-zinc-500 border-zinc-800'}`}>
-                      {index + 1}
-                    </div>
-                  </div>
-                );
-              })}
-
-              {discardPile.length === 0 && (
-                <div className="absolute text-[9px] font-mono text-zinc-700 uppercase tracking-wider">
-                  Buangan Kosong
-                </div>
-              )}
-
-            </div>
-
-            {/* Player 1 (Bottom Seat) */}
-            {(() => {
-              const seatPlayers = remotePlayers.filter(p => !p.isHost);
-              const bottomPlayer = seatPlayers[0];
-              
-              return (
-                <div className="absolute bottom-2 left-1/2 -translate-x-1/2 border border-zinc-800 bg-zinc-900/30 px-5 py-2 rounded-xl flex flex-col items-center z-20 animate-fade-in">
-                  <div className="text-[9px] text-zinc-400 font-mono tracking-[0.2em] uppercase font-normal flex items-center gap-1">
-                    <span className={`w-1.5 h-1.5 rounded-full ${bottomPlayer ? 'bg-emerald-600 animate-pulse' : 'bg-zinc-800'}`} />
-                    {bottomPlayer ? bottomPlayer.name : "(Kursi Kosong)"}
-                  </div>
-                  {bottomPlayer && (
-                    <div className="flex gap-0.5 mt-1 justify-center scale-75 opacity-70">
-                      {[...Array(bottomPlayer.hand.length)].map((_, i) => (
-                        <div key={i} className="w-4 h-6 rounded-sm bg-zinc-700 border border-zinc-800 shadow-sm" />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-
-          </div>
-
-          {/* Minimal Switcher */}
-          <div className="text-center text-zinc-700 text-[9px] font-mono mb-4 flex justify-center gap-3 uppercase tracking-wider">
-            <span>Tampilan Host</span>
-            <button onClick={() => setView("player_game")} className="text-zinc-400 border-b border-zinc-700 hover:text-zinc-200 transition-colors cursor-pointer">Simulasikan Layar HP</button>
-          </div>
-        </div>
+        <HostGameBoardView
+          roomCode={roomCode}
+          remotePlayers={remotePlayers}
+          deck={deck}
+          discardPile={discardPile}
+          turnIndex={activeTurnIndex}
+          initGame={initGame}
+          setView={handleExitGame}
+          chatMessages={chatMessages}
+        />
       )}
 
-      {/* ========================================= */}
-      {/* 4. PLAYER LOBBY VIEW (MINIMALIST)        */}
-      {/* ========================================= */}
       {view === "player_lobby" && (
-        <div className="max-w-xs w-full bg-black/20 backdrop-blur-md rounded-2xl p-6 text-center border border-zinc-800/60">
-          <div className="mb-6 flex flex-col items-center">
-            <h2 className="text-lg font-light tracking-widest uppercase text-zinc-200">Sudah Gabung</h2>
-            <span className="text-zinc-500 text-[9px] font-mono mt-1 tracking-widest uppercase">Pemain: {playerName || "Budi"}</span>
-          </div>
-
-          <div className="border border-emerald-950/40 bg-[#061f19]/30 py-5 px-4 rounded-xl mb-2 flex flex-col items-center relative overflow-hidden border-dashed">
-            <div className="w-6 h-6 rounded-full border-2 border-emerald-600/30 border-t-emerald-500 animate-spin mb-3" />
-            
-            <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-[0.25em] block mb-1.5">Status Anda</span>
-            <span className="text-emerald-500 font-bold text-xs tracking-widest uppercase">Siap Bertarung</span>
-            
-            <div className="w-full h-[1px] bg-emerald-950/30 my-3" />
-            
-            <p className="text-[9px] font-mono text-zinc-400 uppercase tracking-wider leading-relaxed max-w-[160px] mx-auto">
-              Menunggu Host Memulai Permainan ⏳
-            </p>
-          </div>
-        </div>
+        <PlayerLobbyView
+          roomCode={roomCode}
+          playerName={playerName}
+          remotePlayers={remotePlayers}
+          sendLobbyEmoji={sendLobbyEmoji}
+        />
       )}
 
-      {/* ========================================= */}
-      {/* 5. PLAYER GAME VIEW (IMMERSIVE & MINIMAL) */}
-      {/* ========================================= */}
       {view === "player_game" && (
-        <div className="fixed inset-0 bg-[#041410] z-50 flex flex-col justify-between select-none animate-fade-in">
-          
-          {/* 5.1 Clean Top Status Bar */}
-          <div className="px-6 py-3 flex justify-between items-center border-b border-zinc-900/80">
-            <div className="flex items-center gap-2">
-              <div className={`w-1.5 h-1.5 rounded-full ${isMyTurn ? "bg-emerald-500 animate-pulse" : "bg-zinc-700"}`} />
-              <div>
-                <span className="text-[10px] font-medium text-zinc-300 uppercase tracking-[0.2em] block leading-none">
-                  {isMyTurn 
-                    ? (hasDrawnThisTurn ? "Pilih & Buang" : "Giliran Anda") 
-                    : `Giliran: ${activePlayerName}`}
-                </span>
-                <span className="text-[9px] font-mono text-zinc-600 mt-0.5 block uppercase tracking-wider">
-                  {isMyTurn 
-                    ? (hasDrawnThisTurn ? "Buang 1 kartu" : "Ambil 1 kartu") 
-                    : "Menunggu Giliran Lawan"}
-                </span>
-              </div>
-            </div>
+        <PlayerGameBoardView
+          isMyTurn={isMyTurn}
+          hasDrawnThisTurn={hasDrawnThisTurn}
+          activePlayerName={activePlayerName}
+          totalHandPoints={totalHandPoints}
+          bots={bots}
+          discardPile={discardPile}
+          deckCount={deck.length}
+          selectedDiscardIndex={selectedDiscardIndex}
+          setSelectedDiscardIndex={setSelectedDiscardIndex}
+          isDiscardSelectionValid={isDiscardSelectionValid}
+          playerHand={playerHand}
+          setPlayerHand={setPlayerHand}
+          setView={handleExitGame}
+          sendFireTaunt={sendFireTaunt}
+          drawFromDiscardAtIndex={drawFromDiscardAtIndex}
+          drawFromStock={drawFromStock}
+          sortMyHand={sortMyHand}
+          discardSelected={discardSelected}
+          meldSelectedCards={meldSelectedCards}
+          syncHandSort={syncHandSort}
+          setToastMsg={setToastMsg}
+          melds={remotePlayers.find((p) => p.name.toUpperCase() === playerName.toUpperCase())?.melds || []}
+        />
+      )}
 
-            {/* Live Hand Point Counter Badge */}
-            <div className="text-center">
-              <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-[0.2em] block leading-none mb-0.5">TOTAL POIN</span>
-              <span className="text-xs font-medium font-mono text-zinc-300 tracking-wide block leading-none">{totalHandPoints}</span>
-            </div>
-            
-            <button 
-              onClick={() => setView("host_game")} 
-              className="px-2.5 py-1 rounded border border-zinc-800 hover:border-zinc-700 text-[9px] tracking-widest font-mono text-zinc-500 hover:text-zinc-300 transition-all uppercase cursor-pointer flex items-center gap-1"
-            >
-              Meja Host
-            </button>
-          </div>
-
-          {/* 5.1.5 Interactive Opponent Taunting Row */}
-          <div className="px-6 py-2 border-b border-zinc-900/50 bg-black/10 flex items-center gap-4 overflow-x-auto no-scrollbar flex-shrink-0 select-none">
-            <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-[0.2em] flex-shrink-0">Bakar Lawan</span>
-            <div className="flex items-center gap-2 flex-1">
-              {bots.map((bot, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => sendFireTaunt(bot.name)}
-                  className="px-2.5 py-1 rounded-lg border border-zinc-800/60 hover:border-red-900/60 bg-black/20 hover:bg-red-950/15 text-[9px] font-mono text-zinc-500 hover:text-red-500 flex items-center gap-1.5 cursor-pointer transition-all uppercase active:scale-95 group"
-                  title={`Bakar layar ${bot.name}`}
-                >
-                  <span className="text-[8px] animate-pulse group-hover:scale-110 transition-transform">🔥</span>
-                  <span className="font-medium tracking-wide">{bot.name}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* 5.2 Scrollable Discard Drawer (Cleaned) */}
-          {!hasDrawnThisTurn && (
-            <div className="px-6 pt-4 animate-fade-in">
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-[9px] font-normal font-mono text-zinc-500 uppercase tracking-widest">
-                  Kartu Buangan
-                </span>
-                <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-widest">
-                  Geser Kanan →
-                </span>
-              </div>
-              
-              <div className="flex gap-2.5 overflow-x-auto pb-3 pt-1 px-1 snap-x scrollbar-thin">
-                {circularDiscards.map((card, index) => {
-                  const isSelected = selectedDiscardIndex === index;
-                  return (
-                    <div 
-                      key={card.id} 
-                      onClick={() => setSelectedDiscardIndex(isSelected ? null : index)}
-                      className={`flex-shrink-0 relative transition-all duration-300 cursor-pointer snap-start ${
-                        isSelected ? '-translate-y-1.5' : ''
-                      }`}
-                    >
-                      <div className={`w-16 h-24 rounded-lg border relative flex flex-col items-center justify-center bg-zinc-100 select-none transition-all ${
-                        isSelected ? 'border-zinc-300 shadow-md bg-white scale-105' : 'border-zinc-300/80 bg-zinc-200/90'
-                      }`}>
-                        <span className={`text-lg leading-none font-semibold ${card.suit === 'hearts' || card.suit === 'diamonds' ? 'text-red-600' : 'text-zinc-950'}`}>
-                          {card.value}
-                        </span>
-                        <span className={`text-sm leading-none mt-0.5 ${card.suit === 'hearts' || card.suit === 'diamonds' ? 'text-red-600' : 'text-zinc-950'}`}>
-                          {card.suit === 'hearts' ? '♥' : card.suit === 'diamonds' ? '♦' : card.suit === 'clubs' ? '♣' : '♠'}
-                        </span>
-                        
-                        <div className="absolute top-1 right-1.5 text-[9px] font-mono font-medium text-zinc-400/60">
-                          {index + 1}
-                        </div>
-                      </div>
-                      {isSelected && (
-                        <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 bg-zinc-800 border border-zinc-600 rounded-full w-4 h-4 flex items-center justify-center text-[8px] text-white font-bold shadow-sm">
-                          ✓
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-                {discardPile.length === 0 && (
-                  <div className="h-24 w-full border border-dashed border-zinc-800/60 rounded-xl flex items-center justify-center text-[9px] font-mono text-zinc-600">KOSONG</div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {hasDrawnThisTurn && <div className="flex-1" />}
-
-          {/* 5.3 Main Compact Quick Actions (Horizontal, Clean SVG Icons) */}
-          <div className="px-6 py-2 w-full max-w-md mx-auto">
-            {!hasDrawnThisTurn ? (
-              <div className="flex gap-2">
-                {/* Action to take selected discard */}
-                <button 
-                  disabled={!isDiscardSelectionValid}
-                  onClick={() => { if (selectedDiscardIndex !== null && isDiscardSelectionValid) drawFromDiscardAtIndex(selectedDiscardIndex); }}
-                  className={`flex-1 py-2.5 rounded-lg font-medium text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 border ${
-                    isDiscardSelectionValid 
-                      ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border-zinc-700 cursor-pointer shadow-sm shadow-zinc-900' 
-                      : 'bg-zinc-900/40 text-zinc-600 border-zinc-900/60 cursor-not-allowed'
-                  }`}
-                >
-                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M17 3H7c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z" />
-                    <polyline points="15 13 12 16 9 13" />
-                    <line x1="12" y1="8" x2="12" y2="16" />
-                  </svg>
-                  <span>
-                    {selectedDiscardIndex !== null 
-                      ? `Ambil (${circularDiscards.length - selectedDiscardIndex})` 
-                      : "Ambil"}
-                  </span>
-                </button>
-
-                {/* Direct Draw from stock */}
-                <button 
-                  onClick={drawFromStock}
-                  className="flex-1 py-2.5 rounded-lg border border-zinc-800 bg-transparent hover:bg-zinc-900/50 text-zinc-400 text-[10px] font-medium uppercase tracking-widest transition-all flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="3" y="4" width="18" height="16" rx="2" />
-                    <path d="M7 8h10" />
-                    <path d="M7 12h10" />
-                  </svg>
-                  <span>Dek</span>
-                </button>
-              </div>
-            ) : (
-              <div className="flex gap-2">
-                {/* Sort Hand */}
-                <button 
-                  onClick={sortMyHand}
-                  className="flex-1 py-2.5 rounded-lg bg-zinc-900/50 border border-zinc-800 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 font-medium text-[10px] uppercase tracking-widest transition-all cursor-pointer flex items-center justify-center gap-2"
-                >
-                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="4" y1="6" x2="20" y2="6" />
-                    <line x1="4" y1="12" x2="14" y2="12" />
-                    <line x1="4" y1="18" x2="8" y2="18" />
-                  </svg>
-                  <span>Susun</span>
-                </button>
-
-                {/* Discard Selection */}
-                <button 
-                  disabled={!selectedCardId}
-                  onClick={discardSelected}
-                  className={`flex-1 py-2.5 rounded-lg font-medium text-[10px] uppercase tracking-widest transition-all border flex items-center justify-center gap-2 ${
-                    selectedCardId
-                      ? "bg-red-950/30 text-red-400 border-red-900/80 hover:bg-red-900/20 cursor-pointer" 
-                      : "bg-zinc-900/50 border-zinc-900/80 text-zinc-600 cursor-not-allowed"
-                  }`}
-                >
-                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="17 8 12 3 7 8" />
-                    <line x1="12" y1="3" x2="12" y2="15" />
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  </svg>
-                  <span>Buang</span>
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Minimal Action Guidance */}
-          <div className="text-center text-[8px] font-mono tracking-widest uppercase py-1.5 px-4 min-h-[24px] flex items-center justify-center">
-            {!hasDrawnThisTurn 
-              ? selectedDiscardIndex !== null && !isDiscardSelectionValid
-                ? <span className="text-red-900/90 tracking-[0.15em]">Kartu wajib membentuk seri/kembar</span>
-                : <span className="text-zinc-600">Pilih kartu buang atau ketuk dek</span> 
-              : selectedCardId 
-                ? <span className="text-zinc-500">Ketuk tombol buang untuk konfirmasi</span> 
-                : <span className="text-zinc-600">Pilih kartu tangan untuk dibuang</span>}
-          </div>
-
-          {/* 5.4 Clean Grid Hand Area (Fluid Drag & Drop Sortable) */}
-          <div className="w-full flex-1 min-h-[220px] px-6 pb-6 overflow-y-auto select-none flex flex-col justify-center">
-            
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragEnd={handleDragEnd}
-            >
-              <SortableContext
-                items={playerHand.map(c => c.id)}
-                strategy={rectSortingStrategy}
-              >
-                <div className="flex flex-wrap justify-center gap-x-2.5 gap-y-4 max-w-xl mx-auto py-2">
-                  {playerHand.map((card) => (
-                    <SortableCardWrapper
-                      key={card.id}
-                      id={card.id}
-                      suit={card.suit}
-                      value={card.value}
-                      isSelected={selectedCardId === card.id}
-                      hasDrawnThisTurn={hasDrawnThisTurn}
-                      onClick={() => {
-                        if (hasDrawnThisTurn) {
-                          setSelectedCardId(selectedCardId === card.id ? null : card.id);
-                        }
-                      }}
-                    />
-                  ))}
-                </div>
-              </SortableContext>
-            </DndContext>
-          </div>
-
-        </div>
+      {/* UNIVERSAL FLOATING SOCIAL CHAT DRAWER (For non-hosts in lobbies & games!) */}
+      {view !== "landing" && !isHostRole && (
+        <FloatingSocialDeck
+          chatMessages={chatMessages}
+          playerName={playerName}
+          sendChatMessage={sendChatMessage}
+          remotePlayers={remotePlayers}
+        />
       )}
     </main>
   );

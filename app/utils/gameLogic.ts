@@ -4,6 +4,7 @@ export interface Card {
   id: string;
   suit: Suit;
   value: CardValue;
+  thrownBy?: string; // Attribution tracker for discard pile sequence
 }
 
 const SUITS: Suit[] = ["hearts", "diamonds", "clubs", "spades"];
@@ -179,6 +180,20 @@ export const isRun = (cards: Card[]): boolean => {
   return hasValidConfiguration;
 };
 
+export const hasAnyExistingRun = (cards: Card[]): boolean => {
+  if (cards.length < 3) return false;
+  for (let i = 0; i < cards.length; i++) {
+    for (let j = i + 1; j < cards.length; j++) {
+      for (let k = j + 1; k < cards.length; k++) {
+        if (isRun([cards[i], cards[j], cards[k]])) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+};
+
 // Smart Validator: Checks if a specific card can form a 3-card combination (Set or Run) 
 // with cards that are already present in the player's hand.
 // Uses O(N^2) hand pair analysis to seamlessly support Jokers, boundaries, 
@@ -194,7 +209,12 @@ export const canDrawDiscardCard = (targetCard: Card, hand: Card[]): boolean => {
       
       // 1. CHECK SET (KARTU SAMA) WITH THIS PAIR
       if (isSet([c1, c2, targetCard])) {
-        return true;
+        // Syarat Indonesia Remi: Untuk mengambil Set (kartu sama), pemain wajib
+        // sudah memiliki minimal SATU Seri (Urutan/Run) terpisah di sisa tangannya!
+        const remainingHand = hand.filter(c => c.id !== c1.id && c.id !== c2.id);
+        if (hasAnyExistingRun(remainingHand)) {
+          return true;
+        }
       }
       
       // 2. CHECK RUN (URUTAN SERI) WITH THIS PAIR

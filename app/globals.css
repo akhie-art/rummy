@@ -99,8 +99,12 @@ body {
 .portrait-blocker {
   display: none !important;
 }
+
 @media (max-width: 932px) and (orientation: portrait) {
   .portrait-blocker {
     display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
   }
 }
