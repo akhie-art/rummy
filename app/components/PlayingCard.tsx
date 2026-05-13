@@ -40,17 +40,20 @@ export default function PlayingCard({
   const symbol = getSuitSymbol(suit);
   const colorClass = getSuitColor(suit);
 
+  // Definisikan kelas ukuran bawaan yang lebih kecil hanya jika ukuran kustom tidak dipasok via className!
+  const sizeClasses = className.includes("w-") ? "" : "w-16 h-24 sm:w-20 sm:h-30";
+
   if (!faceUp) {
     return (
       <div
         onClick={onClick}
-        className={`w-20 h-32 md:w-24 md:h-36 rounded-xl relative overflow-hidden flex items-center justify-center cursor-pointer border-2 border-white shadow-xl transition-all active:scale-95 select-none ${className}`}
+        className={`rounded-xl relative overflow-hidden flex items-center justify-center cursor-pointer border-2 border-white shadow-xl transition-all active:scale-95 select-none ${sizeClasses} ${className}`}
         style={{
           background: "repeating-linear-gradient(45deg, #991b1b, #991b1b 10px, #7f1d1d 10px, #7f1d1d 20px)",
         }}
       >
         <div className="absolute inset-2 border border-white/30 rounded-lg flex items-center justify-center">
-          <div className="text-gold font-serif text-xl md:text-2xl opacity-80 rotate-12">♠♣♦♥</div>
+          <div className="text-gold font-serif text-sm sm:text-xl opacity-80 rotate-12">♠♣♦♥</div>
         </div>
       </div>
     );
@@ -61,34 +64,34 @@ export default function PlayingCard({
   return (
     <div
       onClick={onClick}
-      className={`poker-card w-20 h-32 md:w-24 md:h-36 bg-white rounded-xl shadow-lg border-2 cursor-pointer select-none flex flex-col justify-between p-2 relative transition-all active:scale-95 ${
+      className={`poker-card bg-white rounded-xl shadow-lg border-2 cursor-pointer select-none flex flex-col justify-between p-1.5 sm:p-2 relative transition-all active:scale-95 ${
         isSelected 
           ? "border-gold -translate-y-6 shadow-gold/50 shadow-xl" 
           : isJoker 
             ? "border-amber-200/80" 
             : "border-zinc-200"
-      } ${className}`}
+      } ${sizeClasses} ${className}`}
     >
       {/* Top-Left corner */}
       <div className={`flex flex-col items-center leading-none ${colorClass}`}>
-        <span className="text-lg md:text-xl font-bold font-sans">{value === "JKR" ? "J" : value}</span>
-        <span className="text-sm md:text-base -mt-0.5">{symbol}</span>
+        <span className="text-xs sm:text-base font-bold font-sans">{value === "JKR" ? "J" : value}</span>
+        <span className="text-[10px] sm:text-xs -mt-0.5">{symbol}</span>
       </div>
 
       {/* Center Emblem */}
-      <div className={`absolute inset-0 flex items-center justify-center opacity-20 text-4xl md:text-5xl pointer-events-none ${colorClass}`}>
+      <div className={`absolute inset-0 flex items-center justify-center opacity-20 text-2xl sm:text-4xl pointer-events-none ${colorClass}`}>
         {isJoker ? (
           <div className="flex flex-col items-center scale-90 opacity-80">
-            <span className="text-5xl">★</span>
-            <span className="text-[9px] font-bold font-mono tracking-[0.25em] uppercase -mt-1">Joker</span>
+            <span className="text-3xl">★</span>
+            <span className="text-[7px] font-bold font-mono tracking-[0.25em] uppercase -mt-1">Joker</span>
           </div>
         ) : symbol}
       </div>
 
       {/* Bottom-Right corner */}
       <div className={`flex flex-col items-center leading-none self-end rotate-180 ${colorClass}`}>
-        <span className="text-lg md:text-xl font-bold font-sans">{value === "JKR" ? "J" : value}</span>
-        <span className="text-sm md:text-base -mt-0.5">{symbol}</span>
+        <span className="text-xs sm:text-base font-bold font-sans">{value === "JKR" ? "J" : value}</span>
+        <span className="text-[10px] sm:text-xs -mt-0.5">{symbol}</span>
       </div>
     </div>
   );

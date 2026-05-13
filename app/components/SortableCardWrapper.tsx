@@ -58,7 +58,7 @@ export default function SortableCardWrapper({
         value={value}
         isSelected={isSelected}
         onClick={onClick} // This handles tap activation if drag doesn't trigger
-        className={`w-24 h-36 shadow-xl rounded-xl border-2 ${
+        className={`w-16 h-24 sm:w-20 sm:h-30 shadow-xl rounded-xl border-2 ${
           isDragging ? "scale-105 rotate-3 cursor-grabbing shadow-gold/20" : "cursor-grab"
         } ${isSelected ? "border-gold shadow-gold/40 scale-105" : "border-zinc-300"}`}
       />

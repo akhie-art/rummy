@@ -118,6 +118,9 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
   const lastSeenDiscardId = useRef<string | null>(discardPile[0]?.id || null);
   const lastSeenPlayersHands = useRef<{ [name: string]: number }>({});
 
+  // --- MATCH START INTRO BANNER ENGINE ---
+  const [showIntroModal, setShowIntroModal] = useState<boolean>(true);
+
   // --- PLAYER ABANDONMENT ENGINE ---
   const [abandonedPlayerName, setAbandonedPlayerName] = useState<string | null>(null);
   const lastSeenPlayerNamesRef = useRef<string[]>(remotePlayers.map((p) => p.name));
@@ -274,13 +277,24 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
         }
       }
 
-      // Trigger physical throwing physics only
+      // Trigger physical throwing physics AND high-fidelity modal announcement
       if (discarderIndex !== -1) {
         const c = discardPile[0];
+        const discardPlayerName = activeSeatPlayers[discarderIndex]?.name || "Pemain";
+
+        // 1. Animasi melempar kartu melayang
         const directions: ("bottom" | "top" | "left" | "right")[] = ["bottom", "top", "left", "right"];
         const dir = directions[discarderIndex % 4] || "bottom";
         setFlyingCard({ card: c, sourceDirection: dir });
         setTimeout(() => setFlyingCard(null), 700);
+
+        // 2. Munculkan Modal Penyiaran Pusat (Broadcast Banner)
+        triggerBroadcast({
+          title: "🗑️ KARTU DIBUANG",
+          subtitle: `${discardPlayerName.toUpperCase()} membuang kartu ke meja!`,
+          type: "discard",
+          card: c
+        });
       }
     }
 
@@ -523,7 +537,7 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
                       : "bg-zinc-900/90 text-zinc-400 border-zinc-700"
                   }`}
                 >
-                  {discardPile.length - index}
+                  {((discardPile.length - index - 1) % 7) + 1}
                 </div>
 
                 {/* Sleek Glass Attribution Nameplate (Bottom Floating) */}
@@ -774,6 +788,50 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
         </div>
       )}
 
+      {/* ======================================================= */}
+      {/* IMMERSIVE MATCH START ANNOUNCEMENT (HOST TV SCREEN)     */}
+      {/* ======================================================= */}
+      {showIntroModal && discardPile.length === 0 && (
+        <div className="fixed inset-0 z-[999999] bg-black/90 backdrop-blur-sm flex items-center justify-center p-6 animate-fade-in">
+          <div className="w-full max-w-md bg-[#031a15]/95 border border-emerald-500/20 rounded-3xl shadow-[0_0_80px_rgba(16,185,129,0.2)] p-8 flex flex-col items-center text-center relative overflow-hidden animate-scale-up">
+            {/* Emerald ambient lighting */}
+            <div className="absolute top-0 inset-x-0 h-[1px] bg-gradient-to-r from-transparent via-emerald-500/60 to-transparent" />
+            <div className="absolute -top-32 w-64 h-64 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none" />
+
+            {/* Giant Golden Card Icon Container */}
+            <div className="w-20 h-20 rounded-full bg-emerald-950/30 border border-emerald-500/30 flex items-center justify-center shadow-inner shadow-emerald-500/10 mb-6 relative animate-pulse">
+              <span className="text-4xl">👑</span>
+              <div className="absolute -bottom-1.5 -right-1.5 bg-emerald-500 text-black font-mono text-[10px] font-black px-2 py-0.5 rounded-full shadow-lg">8</div>
+            </div>
+
+            <span className="text-[10px] font-mono font-extrabold text-emerald-400 uppercase tracking-[0.4em] mb-2.5">
+              PERMAINAN DIMULAI!
+            </span>
+
+            <h2 className="text-xl font-black uppercase text-zinc-100 tracking-widest mb-6">
+              PEMAIN PERTAMA TERPILIH
+            </h2>
+
+            <div className="w-full bg-gradient-to-b from-[#06281f] to-[#041a15] border border-emerald-800/30 rounded-2xl p-5 mb-6 shadow-[inset_0_0_20px_rgba(0,0,0,0.6)]">
+              <span className="block text-[8px] font-mono text-emerald-500/50 uppercase tracking-[0.3em] mb-1.5">GILIRAN PERTAMA:</span>
+              <span className="block text-2xl font-black text-zinc-100 uppercase tracking-widest filter drop-shadow-[0_0_15px_rgba(255,255,255,0.3)] animate-bounce">
+                {seatPlayers[turnIndex]?.name || "Pemain"}
+              </span>
+            </div>
+
+            <p className="text-xs font-mono text-zinc-500 leading-relaxed tracking-wide uppercase mb-8 max-w-xs">
+              Pemain di atas terpilih secara acak untuk membuang kartu pertama & dibekali 8 kartu di awal!
+            </p>
+
+            <button
+              onClick={() => setShowIntroModal(false)}
+              className="px-8 py-3 bg-emerald-600 hover:bg-emerald-500 text-black rounded-xl text-[11px] font-extrabold font-mono tracking-[0.2em] uppercase transition-all shadow-[0_5px_25px_rgba(16,185,129,0.3)] active:scale-95 cursor-pointer"
+            >
+              Lanjut ke Meja Game 🎲
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

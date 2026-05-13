@@ -51,6 +51,8 @@ export default function Home() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [showGlobalMenu, setShowGlobalMenu] = useState(false);
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
   const [fireTaunt, setFireTaunt] = useState<{ active: boolean, sender: string | null }>({ active: false, sender: null });
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   
@@ -284,27 +286,44 @@ export default function Home() {
   const handleStartGame = async () => {
     const freshDeck = shuffleDeck(createDeck());
     
-    // Distribute 7 cards to EACH connected remote player device (skipping Spectator Host)
+    // 1. Kumpulkan semua pemain non-host
+    const nonHostPlayers = remotePlayers.filter(p => !p.isHost);
+    if (nonHostPlayers.length === 0) {
+      setToastMsg("Belum ada pemain bergabung!");
+      setTimeout(() => setToastMsg(null), 2000);
+      return;
+    }
+
+    // 2. Pilih 1 pemain secara acak sebagai starter untuk membuang kartu pertama
+    const randomStarterIndex = Math.floor(Math.random() * nonHostPlayers.length);
+    const starterPlayerName = nonHostPlayers[randomStarterIndex].name;
+
+    // 3. Bagikan kartu: Pemain pertama (starter) mendapat 8 kartu, yang lain 7 kartu
     const updatedRemotePlayers = remotePlayers.map((p) => {
       if (p.isHost) return { ...p, hand: [], melds: [], hasDrawn: false };
+      
+      const isStarter = p.name.toUpperCase() === starterPlayerName.toUpperCase();
       return {
         ...p,
-        hand: freshDeck.splice(0, 7),
+        hand: freshDeck.splice(0, isStarter ? 8 : 7),
         melds: [],
-        hasDrawn: false
+        // Penanda otomatis: starter sudah memegang 8 kartu, artinya ia langsung di fase BUANG
+        hasDrawn: isStarter
       };
     });
 
-    // Push first card to active discard pile
-    const drawnFirst = freshDeck.splice(0, 1)[0];
-    const firstDiscard = [{ ...drawnFirst, thrownBy: "Dealer" }];
+    // 4. Temukan index pemain ini di dalam susunan non-host agar turn_index sinkron
+    const playingOnlyPlayers = updatedRemotePlayers.filter(p => !p.isHost);
+    const initialPlayingTurnIndex = playingOnlyPlayers.findIndex(
+      p => p.name.toUpperCase() === starterPlayerName.toUpperCase()
+    );
 
     const finalReadyState: RemoteGameState = {
       status: "playing",
       deck: freshDeck,
-      discard_pile: firstDiscard,
+      discard_pile: [], // MEMULAI DARI KOSONG! Bukan dealer yang buang lagi!
       players: updatedRemotePlayers,
-      turn_index: 0 // Start from first player
+      turn_index: initialPlayingTurnIndex !== -1 ? initialPlayingTurnIndex : 0
     };
 
     // Write state update to Supabase - will auto sync via postgres channels!
@@ -379,16 +398,51 @@ export default function Home() {
 
   const toggleFullscreen = () => {
     if (typeof document === "undefined") return;
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen()
-        .then(() => {
-          // Allow dynamic rotation in fullscreen (Portrait & Landscape supported!)
-        })
-        .catch((err) => {
-          console.warn(`Fullscreen error: ${err.message}`);
-        });
+    const docEl = document.documentElement as any;
+    const doc = document as any;
+
+    // Deteksi status fullscreen native di lintas browser/platform
+    const isNativeFullscreen = !!(
+      doc.fullscreenElement || 
+      doc.webkitFullscreenElement || 
+      doc.mozFullScreenElement || 
+      doc.msFullscreenElement
+    );
+
+    if (!isNativeFullscreen) {
+      try {
+        if (docEl.requestFullscreen) {
+          docEl.requestFullscreen().catch(() => {});
+        } else if (docEl.webkitRequestFullscreen) {
+          docEl.webkitRequestFullscreen();
+        } else if (docEl.mozRequestFullScreen) {
+          docEl.mozRequestFullScreen();
+        } else if (docEl.msRequestFullscreen) {
+          docEl.msRequestFullscreen();
+        } else {
+          // FALLBACK KHUSUS SAFARI IPHONE 📱💡
+          // iOS Safari di iPhone memblokir fullscreen API pada elemen HTML biasa.
+          // Kita tampilkan panduan ramah agar pengguna memanfaatkan fitur rotasi Safari!
+          setToastMsg("Rotasi ke Landscape (Miring) untuk Layar Penuh di iPhone! 📱🔄");
+          setTimeout(() => setToastMsg(null), 4000);
+        }
+      } catch (err: any) {
+        console.warn("Fullscreen polyfill error:", err?.message);
+      }
     } else {
-      document.exitFullscreen().catch(() => {});
+      try {
+        if (doc.exitFullscreen) {
+          doc.exitFullscreen().catch(() => {});
+        } else if (doc.webkitExitFullscreen) {
+          doc.webkitExitFullscreen();
+        } else if (doc.mozCancelFullScreen) {
+          doc.mozCancelFullScreen();
+        } else if (doc.msExitFullscreen) {
+          doc.msExitFullscreen();
+        }
+      } catch (err: any) {
+        console.warn("Exit fullscreen polyfill error:", err?.message);
+      }
     }
   };
 
@@ -529,14 +583,27 @@ export default function Home() {
         setTimeout(() => setToastMsg(null), 3000);
       }
 
-      // Track native browser fullscreen events
-      const handleFs = () => setIsFullscreen(!!document.fullscreenElement);
+      // Track native browser fullscreen events across all rendering engines
+      const handleFs = () => {
+        const doc = document as any;
+        setIsFullscreen(!!(
+          doc.fullscreenElement || 
+          doc.webkitFullscreenElement || 
+          doc.mozFullScreenElement || 
+          doc.msFullscreenElement
+        ));
+      };
+      
       document.addEventListener("fullscreenchange", handleFs);
-      document.addEventListener("webkitfullscreenchange", handleFs); // Safari compatibility
+      document.addEventListener("webkitfullscreenchange", handleFs); // Webkit (Safari, iOS Chrome)
+      document.addEventListener("mozfullscreenchange", handleFs);    // Firefox
+      document.addEventListener("MSFullscreenChange", handleFs);     // IE/Edge
       
       return () => {
         document.removeEventListener("fullscreenchange", handleFs);
         document.removeEventListener("webkitfullscreenchange", handleFs);
+        document.removeEventListener("mozfullscreenchange", handleFs);
+        document.removeEventListener("MSFullscreenChange", handleFs);
       };
     }
   }, []);
@@ -941,7 +1008,7 @@ export default function Home() {
   const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&color=e4e4e7&bgcolor=09251d&qzone=2&data=${encodeURIComponent(getJoinLink())}`;
 
   return (
-    <main className="min-h-screen text-zinc-200 relative flex flex-col items-center justify-center p-4 overflow-hidden bg-[#041611]">
+    <main className="min-h-[100dvh] h-[100dvh] text-zinc-200 relative flex flex-col items-center justify-center p-4 overflow-hidden bg-[#041611] select-none">
       
       {/* ========================================= */}
       {/* GLOBAL REAL-TIME LOBBY TAUNT OVERLAY      */}
@@ -970,44 +1037,163 @@ export default function Home() {
 
 
 
-      {/* Global Minimalist Fullscreen Toggle Button */}
-      <button 
-        onClick={toggleFullscreen}
-        className="fixed top-4 right-4 z-[9999] p-2 rounded-lg border border-zinc-800/60 bg-[#041611]/40 hover:bg-zinc-900/60 backdrop-blur-md text-zinc-500 hover:text-zinc-300 cursor-pointer transition-all flex items-center justify-center group"
-        title={isFullscreen ? "Keluar Layar Penuh" : "Layar Penuh"}
-      >
-        {isFullscreen ? (
-          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M10 14l-7 7" />
-          </svg>
-        ) : (
-          <svg className="w-3.5 h-3.5 transition-transform group-hover:scale-110" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M16 21h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
-          </svg>
+      {/* ========================================================== */}
+      {/* GLOBAL ACTION CONTROLS SUITE (INTELLIGENT RESPONSIVE MENU) */}
+      {/* ========================================================== */}
+
+      {/* 1. DESKTOP & TABLET BAR (Always visible on large screens) */}
+      <div className="hidden sm:flex fixed top-4 right-4 z-[9999] items-center gap-2">
+        {/* Global Exit Button (Visible ONLY in Player view) */}
+        {view === "player_game" && (
+          <button 
+            onClick={() => setShowExitConfirm(true)}
+            className="p-2 rounded-lg border border-red-950 bg-red-950/25 hover:bg-red-900/40 backdrop-blur-md border-red-900/40 text-red-400 hover:text-red-300 cursor-pointer transition-all flex items-center justify-center group shadow-[0_0_10px_rgba(220,38,38,0.1)] active:scale-95 mr-1"
+            title="Keluar Game"
+          >
+            <svg className="w-3.5 h-3.5 transition-transform group-hover:-translate-x-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+          </button>
         )}
-      </button>
 
-      {/* Global Minimalist Rules Modal Button */}
-      <button 
-        onClick={() => setShowRules(true)}
-        className="fixed top-4 right-14 z-[9999] p-2 rounded-lg border border-zinc-800/60 bg-[#041611]/40 hover:bg-zinc-900/60 backdrop-blur-md text-zinc-500 hover:text-zinc-300 cursor-pointer transition-all flex items-center justify-center group"
-        title="Aturan Game"
-      >
-        <svg className="w-3.5 h-3.5 transition-all group-hover:text-amber-400 group-hover:scale-110" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M9 18h6" />
-          <path d="M10 22h4" />
-          <path d="M12 2a7 7 0 0 0-7 7c0 2.3 1 4.4 2.6 5.9C8.5 15.8 9 16.9 9 18h6c0-1.1.5-2.2 1.4-3.1A7 7 0 0 0 12 2z" />
-        </svg>
-      </button>
+        {/* Global Leaderboard Action Button (👑 Crown) */}
+        <button 
+          onClick={() => setShowLeaderboard(true)}
+          className="p-2 rounded-lg border border-zinc-800/60 bg-[#041611]/40 hover:bg-[#062118]/60 backdrop-blur-md hover:border-emerald-800/40 text-zinc-500 hover:text-emerald-400 cursor-pointer transition-all flex items-center justify-center group"
+          title="Klasemen Poin"
+        >
+          <span className="text-xs leading-none transition-transform group-hover:scale-110">👑</span>
+        </button>
 
-      {/* Global Leaderboard Action Button (👑 Crown) */}
-      <button 
-        onClick={() => setShowLeaderboard(true)}
-        className="fixed top-4 right-24 z-[9999] p-2 rounded-lg border border-zinc-800/60 bg-[#041611]/40 hover:bg-[#062118]/60 backdrop-blur-md hover:border-emerald-800/40 text-zinc-500 hover:text-emerald-400 cursor-pointer transition-all flex items-center justify-center group"
-        title="Klasemen Poin"
-      >
-        <span className="text-xs leading-none transition-transform group-hover:scale-110">👑</span>
-      </button>
+        {/* Global Minimalist Rules Modal Button */}
+        <button 
+          onClick={() => setShowRules(true)}
+          className="p-2 rounded-lg border border-zinc-800/60 bg-[#041611]/40 hover:bg-zinc-900/60 backdrop-blur-md text-zinc-500 hover:text-zinc-300 cursor-pointer transition-all flex items-center justify-center group"
+          title="Aturan Game"
+        >
+          <svg className="w-3.5 h-3.5 transition-all group-hover:text-amber-400 group-hover:scale-110" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 18h6" />
+            <path d="M10 22h4" />
+            <path d="M12 2a7 7 0 0 0-7 7c0 2.3 1 4.4 2.6 5.9C8.5 15.8 9 16.9 9 18h6c0-1.1.5-2.2 1.4-3.1A7 7 0 0 0 12 2z" />
+          </svg>
+        </button>
+
+        {/* Global Minimalist Fullscreen Toggle Button */}
+        <button 
+          onClick={toggleFullscreen}
+          className="p-2 rounded-lg border border-zinc-800/60 bg-[#041611]/40 hover:bg-zinc-900/60 backdrop-blur-md text-zinc-500 hover:text-zinc-300 cursor-pointer transition-all flex items-center justify-center group"
+          title={isFullscreen ? "Keluar Layar Penuh" : "Layar Penuh"}
+        >
+          {isFullscreen ? (
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M10 14l-7 7" />
+            </svg>
+          ) : (
+            <svg className="w-3.5 h-3.5 transition-transform group-hover:scale-110" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M16 21h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+            </svg>
+          )}
+        </button>
+      </div>
+
+      {/* 2. MOBILE COMPACT DROPDOWN (Visible exclusively on small screens) */}
+      <div className="block sm:hidden fixed top-4 right-4 z-[9999]">
+        {/* Dropdown Trigger (⋮ Vertical Dots) */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setShowGlobalMenu(!showGlobalMenu);
+          }}
+          className={`p-2 rounded-lg border transition-all backdrop-blur-md flex items-center justify-center shadow-lg cursor-pointer active:scale-90 ${
+            showGlobalMenu
+              ? "bg-[#06251c] border-emerald-700 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.2)]"
+              : "bg-[#041611]/60 border-zinc-800/60 text-zinc-400 hover:text-zinc-200"
+          }`}
+        >
+          <svg className={`w-4 h-4 transition-transform duration-300 ${showGlobalMenu ? "rotate-90" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="1.5" /><circle cx="12" cy="5" r="1.5" /><circle cx="12" cy="19" r="1.5" />
+          </svg>
+        </button>
+
+        {/* Dropdown Panel */}
+        {showGlobalMenu && (
+          <>
+            {/* Transparent click-outside overlay to close menu */}
+            <div className="fixed inset-0 z-[-1]" onClick={() => setShowGlobalMenu(false)} />
+            
+            <div 
+              onClick={(e) => e.stopPropagation()}
+              className="absolute right-0 mt-2 w-36 bg-[#041713]/95 border border-emerald-950/80 backdrop-blur-md p-1 rounded-xl shadow-[0_15px_35px_rgba(0,0,0,0.85)] flex flex-col gap-0.5 animate-scale-up origin-top-right border-t-emerald-800/30"
+            >
+              {/* Leaderboard Item */}
+              <button
+                onClick={() => {
+                  setShowLeaderboard(true);
+                  setShowGlobalMenu(false);
+                }}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg hover:bg-emerald-950/30 text-left transition-colors text-zinc-400 hover:text-zinc-200 group"
+              >
+                <span className="text-xs group-hover:scale-110 transition-transform">👑</span>
+                <span className="text-[9px] font-mono font-bold uppercase tracking-wider">Klasemen</span>
+              </button>
+
+              {/* Rules Item */}
+              <button
+                onClick={() => {
+                  setShowRules(true);
+                  setShowGlobalMenu(false);
+                }}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg hover:bg-emerald-950/30 text-left transition-colors text-zinc-400 hover:text-zinc-200 group"
+              >
+                <svg className="w-3.5 h-3.5 text-zinc-500 group-hover:text-amber-400 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 18h6" />
+                  <path d="M10 22h4" />
+                  <path d="M12 2a7 7 0 0 0-7 7c0 2.3 1 4.4 2.6 5.9C8.5 15.8 9 16.9 9 18h6c0-1.1.5-2.2 1.4-3.1A7 7 0 0 0 12 2z" />
+                </svg>
+                <span className="text-[9px] font-mono font-bold uppercase tracking-wider">Aturan</span>
+              </button>
+
+              {/* Fullscreen Item */}
+              <button
+                onClick={() => {
+                  toggleFullscreen();
+                  setShowGlobalMenu(false);
+                }}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg hover:bg-emerald-950/30 text-left transition-colors text-zinc-400 hover:text-zinc-200 group border-t border-zinc-900/40 mt-0.5 pt-2"
+              >
+                {isFullscreen ? (
+                  <svg className="w-3.5 h-3.5 text-zinc-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M10 14l-7 7" />
+                  </svg>
+                ) : (
+                  <svg className="w-3.5 h-3.5 text-zinc-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M16 21h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+                  </svg>
+                )}
+                <span className="text-[9px] font-mono font-bold uppercase tracking-wider">
+                  {isFullscreen ? "Normal" : "Layar Penuh"}
+                </span>
+              </button>
+
+              {/* Exit Item (Exclusively for active players!) */}
+              {view === "player_game" && (
+                <button
+                  onClick={() => {
+                    setShowExitConfirm(true);
+                    setShowGlobalMenu(false);
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg bg-red-950/20 hover:bg-red-950/45 text-left transition-colors text-red-400 hover:text-red-300 group border-t border-red-950/40 mt-1 pt-2.5"
+                >
+                  <svg className="w-3.5 h-3.5 text-red-500 group-hover:scale-110 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
+                  </svg>
+                  <span className="text-[9px] font-mono font-black uppercase tracking-wider">Keluar</span>
+                </button>
+              )}
+            </div>
+          </>
+        )}
+      </div>
 
       {/* Global Leaderboard Modal Layer */}
       <LeaderboardModal 
@@ -1076,6 +1262,64 @@ export default function Home() {
                   <span>Kartu Joker:</span> <span className="text-amber-600 font-bold">20 Poin</span>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================= */}
+      {/* GLOBAL GAME ABANDONMENT CONFIRMATION OVERLAY            */}
+      {/* ======================================================= */}
+      {showExitConfirm && (
+        <div 
+          onClick={() => setShowExitConfirm(false)}
+          className="fixed inset-0 z-[999999] bg-black/85 backdrop-blur-sm flex items-center justify-center p-5 animate-fade-in select-none"
+        >
+          {/* Modal Body Container */}
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-[290px] bg-[#041411]/95 border border-red-950/60 rounded-2xl shadow-[0_25px_60px_-15px_rgba(0,0,0,0.8)] p-6 flex flex-col items-center text-center relative overflow-hidden animate-scale-up"
+          >
+            {/* Subdued Crimson Glow background */}
+            <div className="absolute -top-16 -left-16 w-40 h-40 bg-red-600/5 rounded-full blur-3xl pointer-events-none" />
+            
+            {/* Warning Icon Wrapper */}
+            <div className="w-14 h-14 rounded-full bg-red-950/30 border border-red-900/40 flex items-center justify-center shadow-inner mb-4 relative">
+              <span className="text-2xl animate-pulse">🚪</span>
+              <span className="absolute bottom-2 right-2 text-xs">🏃</span>
+            </div>
+
+            {/* Content Typography */}
+            <span className="text-[8px] font-mono font-black text-red-500 uppercase tracking-[0.3em] leading-none mb-2">
+              Konfirmasi Menyerah
+            </span>
+            
+            <h3 className="text-xs font-bold tracking-[0.12em] uppercase text-zinc-100 leading-snug mb-2.5">
+              Apakah Anda yakin ingin menyerah & keluar?
+            </h3>
+            
+            <p className="text-[9px] font-mono text-zinc-500 leading-relaxed uppercase tracking-wide mb-6">
+              Skor kartu di tangan Anda saat ini akan tetap dihitung pada klasemen akhir Host.
+            </p>
+
+            {/* Split Action Grid */}
+            <div className="w-full flex flex-col gap-2.5">
+              <button
+                onClick={() => {
+                  setShowExitConfirm(false);
+                  handleExitGame("landing"); // Executes dynamic purge and view reset!
+                }}
+                className="w-full py-2.5 bg-red-950 border border-red-800/60 hover:bg-red-900/50 hover:border-red-700/80 text-red-400 rounded-xl text-[9px] font-black font-mono tracking-widest uppercase transition-all shadow-[0_4px_15px_rgba(220,38,38,0.1)] active:scale-95 cursor-pointer"
+              >
+                Ya, Saya Menyerah
+              </button>
+              
+              <button
+                onClick={() => setShowExitConfirm(false)}
+                className="w-full py-2.5 bg-transparent border border-zinc-900 hover:bg-zinc-900/40 text-zinc-500 hover:text-zinc-300 rounded-xl text-[9px] font-bold font-mono tracking-widest uppercase transition-all active:scale-95 cursor-pointer"
+              >
+                Tidak, Kembali Main
+              </button>
             </div>
           </div>
         </div>

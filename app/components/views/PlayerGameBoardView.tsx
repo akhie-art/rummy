@@ -78,6 +78,9 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
     onConfirm: () => void;
   } | null>(null);
 
+  // --- GAME START ANNOUNCEMENT MODAL ---
+  const [showIntroModal, setShowIntroModal] = useState<boolean>(true);
+
   // --- IMMERSIVE CARD REVEAL OVERLAY ---
   const [revealCard, setRevealCard] = useState<Card | null>(null);
 
@@ -125,28 +128,8 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
                     : "Giliran Anda"
                   : `Giliran: ${activePlayerName}`}
               </span>
-              <span className="text-[9px] font-mono text-zinc-600 mt-0.5 block uppercase tracking-wider">
-                {isMyTurn
-                  ? hasDrawnThisTurn
-                    ? "Buang 1 kartu"
-                    : "Ambil 1 kartu"
-                  : "Menunggu Giliran Lawan"}
-              </span>
             </div>
           </div>
-
-          {/* SUBDUED EMERGENCY EXIT PILL */}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              if (confirm("Apakah Anda yakin ingin menyerah & keluar dari ruangan?")) {
-                setView("landing"); // Triggers handleExitGame("landing") in parent!
-              }
-            }}
-            className="ml-1.5 px-2 py-1 border border-red-950 bg-red-950/20 text-red-500/70 hover:text-red-400 hover:border-red-800/60 rounded-md text-[8px] font-black font-mono tracking-widest uppercase transition-all active:scale-90 hover:shadow-[0_0_10px_rgba(220,38,38,0.15)] cursor-pointer flex items-center"
-          >
-            Keluar
-          </button>
         </div>
 
         {/* Live Hand Point Counter Badge */}
@@ -322,7 +305,7 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
 
                       {/* Sequence Number */}
                       <div className="absolute top-0.5 right-1 text-[7.5px] font-black font-mono text-zinc-500">
-                        #{circularDiscards.length - index}
+                        #{((circularDiscards.length - index - 1) % 7) + 1}
                       </div>
 
                       {/* Thrown By Attribution */}
@@ -408,19 +391,8 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
             onClick={() => {
               if (selectedCardIds.length === 1) {
                 const targetId = selectedCardIds[0];
-                const card = playerHand.find(c => c.id === targetId);
-                if (card) {
-                  setConfirmState({
-                    type: "discard",
-                    card,
-                    message: "Yakin ingin membuang kartu ini? Tindakan ini akan langsung mengakhiri giliran Anda.",
-                    onConfirm: () => {
-                      discardSelected(targetId);
-                      setConfirmState(null);
-                      setSelectedCardIds([]); // Reset selection
-                    }
-                  });
-                }
+                discardSelected(targetId);
+                setSelectedCardIds([]); // Reset seleksi secara instan demi kenyamanan!
               }
             }}
             className={`w-full py-3 rounded-xl font-bold text-[11px] uppercase tracking-[0.2em] transition-all border flex items-center justify-center gap-2 animate-fade-in ${
@@ -668,6 +640,60 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
           <span className="text-[9px] font-mono font-bold text-zinc-600 tracking-[0.2em] uppercase mt-12 opacity-80 animate-bounce-subtle">
             Sentuh layar untuk menutup
           </span>
+        </div>
+      )}
+
+      {/* ======================================================= */}
+      {/* STUNNING RANDOM STARTER WELCOME OVERLAY                 */}
+      {/* ======================================================= */}
+      {showIntroModal && discardPile.length === 0 && (
+        <div 
+          className="fixed inset-0 z-[99999] bg-black/90 backdrop-blur-md flex items-center justify-center p-5 animate-fade-in select-none"
+        >
+          {/* Premium Body */}
+          <div className="w-full max-w-[310px] bg-[#031611]/95 border border-emerald-500/30 rounded-2xl shadow-[0_0_50px_rgba(16,185,129,0.25)] p-6 flex flex-col items-center text-center relative overflow-hidden animate-scale-up">
+            {/* Top Emerald Ambient Sweep */}
+            <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-emerald-500 to-transparent" />
+            <div className="absolute -top-20 w-40 h-40 bg-emerald-500/10 rounded-full blur-3xl" />
+
+            {/* Floating Card Icon Crown */}
+            <div className="w-16 h-16 rounded-full bg-[#042118]/80 border border-emerald-500/30 flex items-center justify-center shadow-inner shadow-emerald-500/20 mb-4 relative animate-pulse">
+              <span className="text-3xl">🃏</span>
+              <div className="absolute -top-1.5 -right-1.5 bg-emerald-500 text-black font-mono text-[8px] font-black px-1.5 py-0.5 rounded-full shadow-lg">8</div>
+            </div>
+
+            {/* Typography */}
+            <span className="text-[9px] font-mono font-extrabold text-emerald-400 uppercase tracking-[0.35em] mb-2">
+              Pertandingan Dimulai
+            </span>
+            
+            <h2 className="text-sm font-bold uppercase text-zinc-100 tracking-wider leading-tight mb-3">
+              Pemain Pertama Terpilih!
+            </h2>
+            
+            <div className="w-full bg-[#06261c]/60 border border-emerald-900/40 rounded-xl p-3 mb-5">
+              <span className="block text-[8px] font-mono text-emerald-500/60 uppercase tracking-widest mb-1">GILIRAN MEMBUANG:</span>
+              <span className="block text-lg font-black text-zinc-100 uppercase tracking-widest drop-shadow-[0_0_10px_rgba(255,255,255,0.2)]">
+                {isMyTurn ? "👉 ANDA 👈" : activePlayerName}
+              </span>
+            </div>
+
+            <p className="text-[9px] font-mono text-zinc-400 leading-relaxed tracking-wide mb-6 uppercase">
+              {isMyTurn 
+                ? "Anda mendapat 8 kartu awal! Silakan pilih & buang 1 kartu untuk memulai."
+                : `${activePlayerName} memegang 8 kartu awal & bertugas membuang kartu pertama.`
+              }
+            </p>
+
+            {/* Action Cta */}
+            <button
+              onClick={() => setShowIntroModal(false)}
+              className="w-full py-2.5 bg-emerald-500 border border-emerald-400 text-black rounded-xl text-[10px] font-black font-mono tracking-widest uppercase transition-all active:scale-95 cursor-pointer hover:bg-emerald-400 shadow-[0_5px_20px_rgba(16,185,129,0.3)] flex items-center justify-center gap-1.5"
+            >
+              <span>Siap Tempur</span>
+              <span className="text-xs">🔥</span>
+            </button>
+          </div>
         </div>
       )}
     </div>

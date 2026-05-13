@@ -123,6 +123,14 @@ const FloatingSocialDeck: React.FC<FloatingSocialDeckProps> = ({
         )}
       </button>
 
+      {/* C. BACKDROP LUXURY UNTUK MENUTUP LACI SAAT DIKLIK DI LUAR */}
+      {isOpen && (
+        <div 
+          className="fixed inset-0 z-[98] bg-black/20 backdrop-blur-[0.5px] animate-fade-in"
+          onClick={() => setIsOpen(false)}
+        />
+      )}
+
       {/* B. LACI CHAT MELUNCUR (GLASSMORPHIC SLIDE-UP SOCIAL DRAWER) */}
       <div 
         className={`fixed inset-y-0 right-0 z-[99] w-full max-w-[290px] bg-[#070a0a]/95 backdrop-blur-xl border-l border-zinc-800/60 shadow-2xl transform transition-transform duration-300 ease-out flex flex-col ${
