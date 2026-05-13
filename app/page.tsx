@@ -319,7 +319,8 @@ export default function Home() {
       const urlRoom = params.get("room");
       if (urlRoom && urlRoom.length === 4) {
         setRoomCode(urlRoom.toUpperCase());
-        setView("player_lobby");
+        setToastMsg("Kode Terdeteksi! Silakan Isi Nama ✍️");
+        setTimeout(() => setToastMsg(null), 3000);
       }
 
       // Track native browser fullscreen events
@@ -923,17 +924,18 @@ export default function Home() {
             <span className="text-zinc-500 text-[9px] font-mono mt-1 tracking-widest uppercase">Pemain: {playerName || "Budi"}</span>
           </div>
 
-          <div className="border border-zinc-800/50 bg-zinc-900/30 py-4 rounded-lg mb-6">
-            <span className="text-[9px] font-mono text-zinc-600 uppercase tracking-widest block mb-1">Status</span>
-            <span className="text-emerald-700 font-medium text-xs tracking-widest uppercase">Siap</span>
+          <div className="border border-emerald-950/40 bg-[#061f19]/30 py-5 px-4 rounded-xl mb-2 flex flex-col items-center relative overflow-hidden border-dashed">
+            <div className="w-6 h-6 rounded-full border-2 border-emerald-600/30 border-t-emerald-500 animate-spin mb-3" />
+            
+            <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-[0.25em] block mb-1.5">Status Anda</span>
+            <span className="text-emerald-500 font-bold text-xs tracking-widest uppercase">Siap Bertarung</span>
+            
+            <div className="w-full h-[1px] bg-emerald-950/30 my-3" />
+            
+            <p className="text-[9px] font-mono text-zinc-400 uppercase tracking-wider leading-relaxed max-w-[160px] mx-auto">
+              Menunggu Host Memulai Permainan ⏳
+            </p>
           </div>
-
-          <button 
-            onClick={() => setView("player_game")}
-            className="w-full py-2.5 rounded-lg bg-zinc-200 hover:bg-zinc-100 text-zinc-900 text-xs font-medium tracking-widest uppercase cursor-pointer transition-colors"
-          >
-            Masuk Game
-          </button>
         </div>
       )}
 
