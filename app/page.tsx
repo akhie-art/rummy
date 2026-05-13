@@ -93,9 +93,16 @@ export default function Home() {
   const toggleFullscreen = () => {
     if (typeof document === "undefined") return;
     if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch((err) => {
-        console.warn(`Fullscreen error: ${err.message}`);
-      });
+      document.documentElement.requestFullscreen()
+        .then(() => {
+          // Attempt to lock orientation to landscape automatically when going fullscreen (Android Chrome support)
+          if (typeof screen !== "undefined" && screen.orientation && screen.orientation.lock) {
+            screen.orientation.lock("landscape").catch(() => {});
+          }
+        })
+        .catch((err) => {
+          console.warn(`Fullscreen error: ${err.message}`);
+        });
     } else {
       document.exitFullscreen().catch(() => {});
     }
@@ -212,6 +219,32 @@ export default function Home() {
       
       {/* Ambient Background */}
       <div className="absolute inset-0 pointer-events-none bg-radial from-[#08251d] to-[#041410] opacity-80" />
+
+      {/* 0. IMMERSIVE MOBILE PORTRAIT ROTATION PROMPT */}
+      <div className="fixed inset-0 bg-[#041410] z-[999999] portrait-blocker flex-col items-center justify-center text-center p-8 select-none animate-fade-in overflow-hidden">
+        <div className="absolute inset-0 pointer-events-none bg-radial from-[#08251d] to-[#041410] opacity-95" />
+        
+        <div className="relative z-10 flex flex-col items-center">
+          {/* Dynamic Rotating Screen Icon Vector */}
+          <div className="w-24 h-24 rounded-full bg-emerald-950/30 border border-emerald-900/30 flex items-center justify-center mb-8 relative animate-pulse">
+            <div className="absolute inset-0 border border-emerald-600/20 border-dashed rounded-full animate-[spin_10s_linear_infinite]" />
+            
+            {/* Smoothly spinning smartphone framing */}
+            <svg className="w-10 h-10 text-zinc-200 animate-[spin_2.5s_ease-in-out_infinite]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="5" y="2" width="14" height="20" rx="3" />
+              <path d="M12 18h.01" />
+              {/* Arc indicating rotation */}
+              <path d="M12 2A10 10 0 0 1 22 12" className="opacity-40" strokeDasharray="2 2" />
+            </svg>
+          </div>
+
+          <span className="text-[8px] font-mono text-emerald-600 uppercase tracking-[0.3em] block leading-none mb-2.5">Orientasi Layar</span>
+          <h1 className="text-base font-medium tracking-widest text-zinc-100 uppercase leading-snug mb-3">Silakan Putar HP Anda</h1>
+          <p className="text-[9px] font-mono text-zinc-500 max-w-xs uppercase tracking-[0.2em] leading-relaxed">
+            Wajib gunakan mode miring (landscape) agar tata letak kartu terlihat megah & luas
+          </p>
+        </div>
+      </div>
 
       {/* Global Minimalist Fullscreen Toggle Button */}
       <button 
