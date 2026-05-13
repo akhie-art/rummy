@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import PlayingCard from "./components/PlayingCard";
 import SortableCardWrapper from "./components/SortableCardWrapper";
 import { Card, createDeck, shuffleDeck, sortHand, canDrawDiscardCard, getCardPoints } from "./utils/gameLogic";
+import { supabase } from "./utils/supabaseClient";
 
 // Drag and drop sorting imports
 import {
@@ -20,6 +21,21 @@ import {
   rectSortingStrategy
 } from "@dnd-kit/sortable";
 
+interface RemotePlayer {
+  name: string;
+  hand: Card[];
+  isHost: boolean;
+  hasDrawn: boolean;
+}
+
+interface RemoteGameState {
+  status: "waiting" | "playing";
+  deck: Card[];
+  discard_pile: Card[];
+  players: RemotePlayer[];
+  turn_index: number;
+}
+
 type ViewState = "landing" | "host_lobby" | "host_game" | "player_lobby" | "player_game";
 
 export default function Home() {
@@ -31,6 +47,12 @@ export default function Home() {
   const [fireTaunt, setFireTaunt] = useState<{ active: boolean, sender: string | null }>({ active: false, sender: null });
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   
+  // --- REMOTE MULTIPLAYER STATE ---
+  const [remotePlayers, setRemotePlayers] = useState<RemotePlayer[]>([]);
+  const [gameStatus, setGameStatus] = useState<"waiting" | "playing">("waiting");
+  const [activeTurnIndex, setActiveTurnIndex] = useState<number>(0);
+  const [isHostRole, setIsHostRole] = useState<boolean>(false);
+
   // --- GAME STATE ---
   const [deck, setDeck] = useState<Card[]>([]);
   const [discardPile, setDiscardPile] = useState<Card[]>([]); // Index 0 is the LATEST discard
@@ -58,12 +80,191 @@ export default function Home() {
     }
   };
 
-  // Mock Bot Players Data
-  const [bots] = useState([
-    { name: "Siti", cardCount: 7 },
-    { name: "Andi", cardCount: 7 },
-    { name: "Dewi", cardCount: 7 },
-  ]);
+  // Derived backward-compatible opponents state from active Remote Players!
+  const bots = remotePlayers
+    .filter(p => p.name !== (playerName || "Host"))
+    .map(p => ({
+      name: p.name,
+      cardCount: p.hand.length
+    }));
+
+  // ==========================================
+  // SUPABASE REALTIME MULTIPLAYER ENGINE
+  // ==========================================
+
+  const subscribeToRoom = (code: string, myName: string) => {
+    // Unsubscribe any potential existing channels
+    supabase.removeAllChannels();
+
+    const channel = supabase
+      .channel(`channel_${code}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "rooms",
+          filter: `room_code=eq.${code.toUpperCase()}`,
+        },
+        (payload) => {
+          const newState = payload.new.game_state as RemoteGameState;
+          if (newState) {
+            setRemotePlayers(newState.players);
+            setGameStatus(newState.status);
+            setActiveTurnIndex(newState.turn_index);
+            setDeck(newState.deck);
+            setDiscardPile(newState.discard_pile);
+
+            // Smart auto-routing view states based on database updates
+            setView((currView) => {
+              if (newState.status === "playing") {
+                if (currView === "player_lobby") return "player_game";
+                if (currView === "host_lobby") return "host_game";
+              }
+              return currView;
+            });
+            
+            // Find local player's real-time server reference to update their hand
+            const serverMe = newState.players.find(p => p.name.toUpperCase() === myName.toUpperCase());
+            if (serverMe) {
+              setPlayerHand(serverMe.hand);
+              setHasDrawnThisTurn(serverMe.hasDrawn);
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    return channel;
+  };
+
+  const updateRemoteRoom = async (newGameState: RemoteGameState) => {
+    await supabase
+      .from("rooms")
+      .update({ game_state: newGameState })
+      .eq("room_code", roomCode.toUpperCase());
+  };
+
+  // 1. Host Action: Generate code & create table row in Supabase
+  const handleCreateRoom = async () => {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let newCode = "";
+    for (let i = 0; i < 4; i++) {
+      newCode += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    
+    setRoomCode(newCode);
+    setIsHostRole(true);
+    setPlayerName("Host");
+    
+    const initialState: RemoteGameState = {
+      status: "waiting",
+      deck: [],
+      discard_pile: [],
+      players: [{ name: "Host", hand: [], isHost: true, hasDrawn: false }],
+      turn_index: 0
+    };
+
+    const { error } = await supabase
+      .from("rooms")
+      .insert([{ room_code: newCode, game_state: initialState }]);
+      
+    if (!error) {
+      setRemotePlayers(initialState.players);
+      subscribeToRoom(newCode, "Host");
+      setView("host_lobby");
+    } else {
+      setToastMsg("Gagal Membuat Meja!");
+      setTimeout(() => setToastMsg(null), 2000);
+    }
+  };
+
+  // 2. Player Action: Verify code, append array, and subscribe
+  const handleJoinRoom = async (inputCode: string, inputName: string) => {
+    if (!inputCode || !inputName) {
+      setToastMsg("Lengkapi Nama & Kode!");
+      setTimeout(() => setToastMsg(null), 2000);
+      return;
+    }
+
+    const targetCode = inputCode.toUpperCase().trim();
+    const targetName = inputName.trim();
+
+    const { data, error } = await supabase
+      .from("rooms")
+      .select("game_state")
+      .eq("room_code", targetCode)
+      .maybeSingle();
+      
+    if (error || !data) {
+      setToastMsg("Meja Tidak Ditemukan!");
+      setTimeout(() => setToastMsg(null), 2000);
+      return;
+    }
+
+    const liveState = data.game_state as RemoteGameState;
+    
+    if (liveState.players.some(p => p.name.toUpperCase() === targetName.toUpperCase())) {
+      setToastMsg("Nama Sudah Terpakai!");
+      setTimeout(() => setToastMsg(null), 2000);
+      return;
+    }
+
+    const updatedPlayersList = [
+      ...liveState.players,
+      { name: targetName, hand: [], isHost: false, hasDrawn: false }
+    ];
+
+    const nextState: RemoteGameState = {
+      ...liveState,
+      players: updatedPlayersList
+    };
+
+    const { error: putError } = await supabase
+      .from("rooms")
+      .update({ game_state: nextState })
+      .eq("room_code", targetCode);
+      
+    if (!putError) {
+      setRoomCode(targetCode);
+      setPlayerName(targetName);
+      setRemotePlayers(updatedPlayersList);
+      subscribeToRoom(targetCode, targetName);
+      setView("player_lobby");
+    } else {
+      setToastMsg("Gagal Bergabung!");
+      setTimeout(() => setToastMsg(null), 2000);
+    }
+  };
+
+  // 3. Host Action: Deal cards globally and update state to active playing
+  const handleStartGame = async () => {
+    const freshDeck = shuffleDeck(createDeck());
+    
+    // Distribute 7 cards to EACH connected remote player device (skipping Spectator Host)
+    const updatedRemotePlayers = remotePlayers.map((p) => {
+      if (p.isHost) return { ...p, hand: [], hasDrawn: false };
+      return {
+        ...p,
+        hand: freshDeck.splice(0, 7),
+        hasDrawn: false
+      };
+    });
+
+    // Push first card to active discard pile
+    const firstDiscard = freshDeck.splice(0, 1);
+
+    const finalReadyState: RemoteGameState = {
+      status: "playing",
+      deck: freshDeck,
+      discard_pile: firstDiscard,
+      players: updatedRemotePlayers,
+      turn_index: 0 // Start from first player
+    };
+
+    // Write state update to Supabase - will auto sync via postgres channels!
+    await updateRemoteRoom(finalReadyState);
+  };
 
   // Initialize and Start Game
   const initGame = () => {
@@ -96,8 +297,9 @@ export default function Home() {
       document.documentElement.requestFullscreen()
         .then(() => {
           // Attempt to lock orientation to landscape automatically when going fullscreen (Android Chrome support)
-          if (typeof screen !== "undefined" && screen.orientation && screen.orientation.lock) {
-            screen.orientation.lock("landscape").catch(() => {});
+          const anyScreen = typeof screen !== "undefined" ? (screen as any) : null;
+          if (anyScreen && anyScreen.orientation && anyScreen.orientation.lock) {
+            anyScreen.orientation.lock("landscape").catch(() => {});
           }
         })
         .catch((err) => {
@@ -132,46 +334,114 @@ export default function Home() {
     }
   }, []);
 
-  // Actions
-  const drawFromStock = () => {
+  // Action Handlers (Multiplayer Synced)
+  const drawFromStock = async () => {
     if (hasDrawnThisTurn) return;
     if (deck.length === 0) return;
-    const newDeck = [...deck];
-    const drawnCard = newDeck.shift()!;
-    setDeck(newDeck);
-    setPlayerHand([...playerHand, drawnCard]);
-    setHasDrawnThisTurn(true);
+    
+    // Validate active turn
+    const playingPlayers = remotePlayers.filter(p => !p.isHost);
+    const myIdx = playingPlayers.findIndex(p => p.name.toUpperCase() === playerName.toUpperCase());
+    
+    if (myIdx !== activeTurnIndex) {
+      setToastMsg("Tunggu! Bukan Giliran Anda ⏰");
+      setTimeout(() => setToastMsg(null), 2000);
+      return;
+    }
+
+    const updatedDeck = [...deck];
+    const drawnCard = updatedDeck.shift()!;
+    const updatedHand = [...playerHand, drawnCard];
+
+    const nextPlayers = remotePlayers.map((p) => {
+      if (p.name.toUpperCase() === playerName.toUpperCase()) {
+        return { ...p, hand: updatedHand, hasDrawn: true };
+      }
+      return p;
+    });
+
+    const updatedState: RemoteGameState = {
+      status: "playing",
+      deck: updatedDeck,
+      discard_pile: discardPile,
+      players: nextPlayers,
+      turn_index: activeTurnIndex
+    };
+
+    await updateRemoteRoom(updatedState);
     setSelectedDiscardIndex(null);
   };
 
-  const drawFromDiscardAtIndex = (index: number) => {
+  const drawFromDiscardAtIndex = async (index: number) => {
     if (hasDrawnThisTurn) return;
     if (index >= discardPile.length || index >= 7) return;
     
-    const newDiscard = [...discardPile];
-    // LOGIC UPDATE: Taking a card now takes THAT card AND all older cards beneath it 
-    // (from current index up to the rest of the available 7 circular cards).
-    const availableToTake = Math.min(newDiscard.length, 7);
+    // Validate turn
+    const playingPlayers = remotePlayers.filter(p => !p.isHost);
+    const myIdx = playingPlayers.findIndex(p => p.name.toUpperCase() === playerName.toUpperCase());
+    
+    if (myIdx !== activeTurnIndex) {
+      setToastMsg("Tunggu! Bukan Giliran Anda ⏰");
+      setTimeout(() => setToastMsg(null), 2000);
+      return;
+    }
+
+    const nextDiscard = [...discardPile];
+    const availableToTake = Math.min(nextDiscard.length, 7);
     const countToTake = availableToTake - index;
-    
-    // Splice starts at selected 'index' and takes 'countToTake' elements downwards
-    const takenCards = newDiscard.splice(index, countToTake); 
-    
-    setDiscardPile(newDiscard);
-    setPlayerHand([...playerHand, ...takenCards]);
-    setHasDrawnThisTurn(true);
+    const takenCards = nextDiscard.splice(index, countToTake);
+    const updatedHand = [...playerHand, ...takenCards];
+
+    const nextPlayers = remotePlayers.map((p) => {
+      if (p.name.toUpperCase() === playerName.toUpperCase()) {
+        return { ...p, hand: updatedHand, hasDrawn: true };
+      }
+      return p;
+    });
+
+    const updatedState: RemoteGameState = {
+      status: "playing",
+      deck: deck,
+      discard_pile: nextDiscard,
+      players: nextPlayers,
+      turn_index: activeTurnIndex
+    };
+
+    await updateRemoteRoom(updatedState);
     setSelectedDiscardIndex(null);
   };
 
-  const discardSelected = () => {
+  const discardSelected = async () => {
     if (!selectedCardId) return;
     if (!hasDrawnThisTurn) return;
-    const cardToDiscard = playerHand.find(c => c.id === selectedCardId);
-    if (!cardToDiscard) return;
-    setPlayerHand(playerHand.filter(c => c.id !== selectedCardId));
-    setDiscardPile([cardToDiscard, ...discardPile]);
+
+    const targetCard = playerHand.find(c => c.id === selectedCardId);
+    if (!targetCard) return;
+
+    const updatedHand = playerHand.filter(c => c.id !== selectedCardId);
+    const updatedDiscard = [targetCard, ...discardPile];
+
+    // Cycle to the next active player's turn index (skipping spectator Host)
+    const playingPlayers = remotePlayers.filter(p => !p.isHost);
+    const nextTurnIdx = (activeTurnIndex + 1) % (playingPlayers.length || 1);
+
+    const nextPlayers = remotePlayers.map((p) => {
+      if (p.name.toUpperCase() === playerName.toUpperCase()) {
+        return { ...p, hand: updatedHand, hasDrawn: false };
+      }
+      return p;
+    });
+
+    const updatedState: RemoteGameState = {
+      status: "playing",
+      deck: deck,
+      discard_pile: updatedDiscard,
+      players: nextPlayers,
+      turn_index: nextTurnIdx
+    };
+
+    await updateRemoteRoom(updatedState);
     setSelectedCardId(null);
-    setHasDrawnThisTurn(false);
   };
 
   // Funny Interactive Taunt with Bot Retaliation
@@ -195,6 +465,12 @@ export default function Home() {
   const sortMyHand = () => {
     setPlayerHand(sortHand(playerHand));
   };
+
+  // Derived Turn Tracking Variables
+  const activePlayingPlayers = remotePlayers.filter(p => !p.isHost);
+  const currentMyIdx = activePlayingPlayers.findIndex(p => p.name.toUpperCase() === playerName.toUpperCase());
+  const isMyTurn = currentMyIdx === activeTurnIndex;
+  const activePlayerName = activePlayingPlayers[activeTurnIndex]?.name || "...";
 
   const circularDiscards = discardPile.slice(0, 7);
   
@@ -380,7 +656,7 @@ export default function Home() {
 
           <div className="space-y-4">
             <button 
-              onClick={() => { initGame(); setView("host_lobby"); }}
+              onClick={handleCreateRoom}
               className="w-full py-2.5 rounded-lg border border-zinc-700 bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs font-medium tracking-widest transition-all uppercase cursor-pointer"
             >
               Buat Meja
@@ -404,10 +680,12 @@ export default function Home() {
                 type="text" 
                 placeholder="KODE ROOM" 
                 maxLength={4}
+                value={roomCode}
+                onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
                 className="w-full bg-transparent border border-zinc-800 rounded-lg px-3 py-2 text-center text-zinc-200 text-xs font-medium tracking-[0.2em] placeholder-zinc-600 focus:outline-none focus:border-zinc-600 transition-colors uppercase"
               />
               <button 
-                onClick={() => { initGame(); setView("player_lobby"); }}
+                onClick={() => handleJoinRoom(roomCode, playerName)}
                 className="w-full py-2.5 rounded-lg bg-zinc-100 hover:bg-zinc-200 text-zinc-950 text-xs font-medium tracking-widest transition-all uppercase cursor-pointer"
               >
                 Gabung Game
@@ -445,22 +723,35 @@ export default function Home() {
             <span className="text-[9px] text-emerald-600 font-mono tracking-[0.15em] uppercase animate-pulse leading-none block">Menunggu Pemain</span>
           </div>
 
-          <div className="grid grid-cols-1 gap-2 mb-6">
-            <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-lg px-4 py-2.5 flex items-center justify-between">
-              <span className="text-xs text-zinc-300 font-light tracking-wider">{playerName || "Budi"} (Anda)</span>
-              <span className="text-emerald-600 text-[9px] font-mono">SIAP</span>
-            </div>
-            {bots.map((bot, idx) => (
-              <div key={idx} className="bg-zinc-900/40 border border-zinc-800/50 rounded-lg px-4 py-2.5 flex items-center justify-between">
-                <span className="text-xs text-zinc-500 font-light tracking-wider">{bot.name}</span>
-                <span className="text-emerald-700/60 text-[9px] font-mono">SIAP</span>
+          <div className="grid grid-cols-1 gap-2 mb-6 max-h-[200px] overflow-y-auto no-scrollbar px-1">
+            {remotePlayers.map((p, idx) => (
+              <div key={idx} className="bg-[#061f19]/40 border border-emerald-900/20 rounded-lg px-4 py-2.5 flex items-center justify-between animate-fade-in shadow-sm">
+                <span className={`text-xs tracking-wider ${p.isHost ? "text-zinc-400 italic font-normal" : "text-zinc-200 font-light uppercase"}`}>
+                  {p.name} {p.isHost ? "(Spectator)" : ""}
+                </span>
+                <span className={`text-[8px] font-mono uppercase tracking-widest ${p.isHost ? "text-zinc-600" : "text-emerald-600 font-bold"}`}>
+                  {p.isHost ? "Terhubung" : "Siap"}
+                </span>
               </div>
             ))}
+            
+            {remotePlayers.length <= 1 && (
+              <div className="text-center py-6 border border-dashed border-zinc-900 rounded-lg bg-black/10">
+                <span className="text-[9px] font-mono text-zinc-600 uppercase tracking-widest animate-pulse">
+                  Menunggu Pemain Bergabung...
+                </span>
+              </div>
+            )}
           </div>
 
           <button 
-            onClick={() => setView("host_game")}
-            className="w-full py-2.5 rounded-lg border border-zinc-700 hover:border-zinc-600 text-zinc-200 text-xs font-medium tracking-widest transition-all uppercase cursor-pointer bg-zinc-900/80"
+            onClick={handleStartGame}
+            disabled={remotePlayers.length <= 1}
+            className={`w-full py-2.5 rounded-lg border text-xs font-medium tracking-widest transition-all uppercase cursor-pointer ${
+              remotePlayers.length <= 1
+                ? "bg-zinc-950 border-zinc-900 text-zinc-700 cursor-not-allowed opacity-60"
+                : "bg-zinc-900/80 border-zinc-700 hover:border-emerald-600/60 text-zinc-200 hover:bg-emerald-950/10 hover:text-emerald-400"
+            }`}
           >
             Mulai Game
           </button>
@@ -486,27 +777,52 @@ export default function Home() {
           {/* Table layout */}
           <div className="flex-1 flex relative items-center justify-center">
             
-            {/* Player 2 (Top) */}
-            <div className="absolute top-2 left-1/2 -translate-x-1/2 text-center z-20">
-              <div className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider">{bots[0].name}</div>
-              <div className="flex gap-0.5 mt-1 justify-center opacity-40 scale-75">
-                {[...Array(bots[0].cardCount)].map((_, i) => (
-                  <div key={i} className="w-3 h-5 rounded-sm bg-zinc-700 border border-zinc-800 shadow-sm" />
-                ))}
-              </div>
-            </div>
+            {/* Derived seat tracking list */}
+            {(() => {
+              const seatPlayers = remotePlayers.filter(p => !p.isHost);
+              
+              return (
+                <>
+                  {/* Player 2 (Top) */}
+                  <div className="absolute top-2 left-1/2 -translate-x-1/2 text-center z-20">
+                    <div className={`text-[10px] font-mono uppercase tracking-wider ${seatPlayers[1] ? 'text-zinc-300' : 'text-zinc-600 italic opacity-50'}`}>
+                      {seatPlayers[1] ? seatPlayers[1].name : "(Kursi Kosong)"}
+                    </div>
+                    {seatPlayers[1] && (
+                      <div className="flex gap-0.5 mt-1 justify-center opacity-40 scale-75">
+                        {[...Array(seatPlayers[1].hand.length)].map((_, i) => (
+                          <div key={i} className="w-3 h-5 rounded-sm bg-zinc-700 border border-zinc-800 shadow-sm" />
+                        ))}
+                      </div>
+                    )}
+                  </div>
 
-            {/* Player 3 (Left) */}
-            <div className="absolute left-2 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1 z-20">
-              <div className="text-[10px] font-mono text-zinc-600 -rotate-90 mb-2 uppercase tracking-wider">{bots[1].name}</div>
-              <div className="text-xs bg-zinc-900 border border-zinc-800 text-zinc-500 rounded-full w-6 h-6 flex items-center justify-center font-mono">{bots[1].cardCount}</div>
-            </div>
+                  {/* Player 3 (Left) */}
+                  <div className="absolute left-2 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1 z-20">
+                    <div className={`text-[10px] font-mono -rotate-90 mb-2 uppercase tracking-wider ${seatPlayers[2] ? 'text-zinc-300' : 'text-zinc-700 italic opacity-50'}`}>
+                      {seatPlayers[2] ? seatPlayers[2].name : "(Kosong)"}
+                    </div>
+                    {seatPlayers[2] && (
+                      <div className="text-xs bg-zinc-900 border border-zinc-800 text-zinc-500 rounded-full w-6 h-6 flex items-center justify-center font-mono">
+                        {seatPlayers[2].hand.length}
+                      </div>
+                    )}
+                  </div>
 
-            {/* Player 4 (Right) */}
-            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1 z-20">
-              <div className="text-[10px] font-mono text-zinc-600 rotate-90 mb-2 uppercase tracking-wider">{bots[2].name}</div>
-              <div className="text-xs bg-zinc-900 border border-zinc-800 text-zinc-500 rounded-full w-6 h-6 flex items-center justify-center font-mono">{bots[2].cardCount}</div>
-            </div>
+                  {/* Player 4 (Right) */}
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1 z-20">
+                    <div className={`text-[10px] font-mono rotate-90 mb-2 uppercase tracking-wider ${seatPlayers[3] ? 'text-zinc-300' : 'text-zinc-700 italic opacity-50'}`}>
+                      {seatPlayers[3] ? seatPlayers[3].name : "(Kosong)"}
+                    </div>
+                    {seatPlayers[3] && (
+                      <div className="text-xs bg-zinc-900 border border-zinc-800 text-zinc-500 rounded-full w-6 h-6 flex items-center justify-center font-mono">
+                        {seatPlayers[3].hand.length}
+                      </div>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
 
             {/* CLEAN CIRCULAR TABLE CONTAINER */}
             <div className="w-[70vh] max-w-[480px] aspect-square rounded-full relative flex items-center justify-center border border-zinc-800/40 bg-black/10">
@@ -565,18 +881,27 @@ export default function Home() {
 
             </div>
 
-            {/* Player 1 (Bottom) */}
-            <div className="absolute bottom-2 left-1/2 -translate-x-1/2 border border-zinc-800 bg-zinc-900/30 px-5 py-2 rounded-xl flex flex-col items-center z-20">
-              <div className="text-[9px] text-zinc-400 font-mono tracking-[0.2em] uppercase font-normal flex items-center gap-1">
-                <span className="w-1 h-1 bg-emerald-700 rounded-full" />
-                Aktif: {playerName || "BUDI"}
-              </div>
-              <div className="flex gap-0.5 mt-1 justify-center scale-75 opacity-70">
-                {[...Array(playerHand.length)].map((_, i) => (
-                  <div key={i} className="w-4 h-6 rounded-sm bg-zinc-700 border border-zinc-800" />
-                ))}
-              </div>
-            </div>
+            {/* Player 1 (Bottom Seat) */}
+            {(() => {
+              const seatPlayers = remotePlayers.filter(p => !p.isHost);
+              const bottomPlayer = seatPlayers[0];
+              
+              return (
+                <div className="absolute bottom-2 left-1/2 -translate-x-1/2 border border-zinc-800 bg-zinc-900/30 px-5 py-2 rounded-xl flex flex-col items-center z-20 animate-fade-in">
+                  <div className="text-[9px] text-zinc-400 font-mono tracking-[0.2em] uppercase font-normal flex items-center gap-1">
+                    <span className={`w-1.5 h-1.5 rounded-full ${bottomPlayer ? 'bg-emerald-600 animate-pulse' : 'bg-zinc-800'}`} />
+                    {bottomPlayer ? bottomPlayer.name : "(Kursi Kosong)"}
+                  </div>
+                  {bottomPlayer && (
+                    <div className="flex gap-0.5 mt-1 justify-center scale-75 opacity-70">
+                      {[...Array(bottomPlayer.hand.length)].map((_, i) => (
+                        <div key={i} className="w-4 h-6 rounded-sm bg-zinc-700 border border-zinc-800 shadow-sm" />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
           </div>
 
@@ -621,13 +946,17 @@ export default function Home() {
           {/* 5.1 Clean Top Status Bar */}
           <div className="px-6 py-3 flex justify-between items-center border-b border-zinc-900/80">
             <div className="flex items-center gap-2">
-              <div className={`w-1.5 h-1.5 rounded-full ${!hasDrawnThisTurn ? "bg-emerald-600" : "bg-zinc-600"}`} />
+              <div className={`w-1.5 h-1.5 rounded-full ${isMyTurn ? "bg-emerald-500 animate-pulse" : "bg-zinc-700"}`} />
               <div>
                 <span className="text-[10px] font-medium text-zinc-300 uppercase tracking-[0.2em] block leading-none">
-                  {hasDrawnThisTurn ? "Pilih & Buang" : "Giliran Anda"}
+                  {isMyTurn 
+                    ? (hasDrawnThisTurn ? "Pilih & Buang" : "Giliran Anda") 
+                    : `Giliran: ${activePlayerName}`}
                 </span>
-                <span className="text-[9px] font-mono text-zinc-500 mt-0.5 block uppercase tracking-wider">
-                  {hasDrawnThisTurn ? "Buang 1 kartu" : "Ambil 1 kartu"}
+                <span className="text-[9px] font-mono text-zinc-600 mt-0.5 block uppercase tracking-wider">
+                  {isMyTurn 
+                    ? (hasDrawnThisTurn ? "Buang 1 kartu" : "Ambil 1 kartu") 
+                    : "Menunggu Giliran Lawan"}
                 </span>
               </div>
             </div>
