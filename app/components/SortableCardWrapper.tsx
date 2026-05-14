@@ -50,8 +50,8 @@ export default function SortableCardWrapper({
       ref={setNodeRef}
       style={{
         ...style,
-        width: "64px",
-        height: "96px",
+        width: "54px",
+        height: "80px",
         flexShrink: 0,
       }}
       {...attributes}
@@ -63,7 +63,7 @@ export default function SortableCardWrapper({
         value={value}
         isSelected={isSelected}
         onClick={onClick}
-        className={`!w-16 !h-24 shadow-xl rounded-xl border-2 ${
+        className={`!w-[54px] !h-20 shadow-xl rounded-xl border-2 ${
           isDragging ? "scale-105 rotate-3 cursor-grabbing shadow-gold/20" : "cursor-grab"
         } ${isSelected ? "border-gold shadow-gold/40 scale-105" : "border-zinc-300"}`}
       />
