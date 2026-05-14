@@ -19,7 +19,7 @@ export interface ChatMessage {
 }
 
 export interface RemoteGameState {
-  status: "waiting" | "playing";
+  status: "waiting" | "playing" | "finished";
   deck: Card[];
   discard_pile: Card[];
   players: RemotePlayer[];

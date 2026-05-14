@@ -58,7 +58,11 @@ export default function Home() {
   
   // --- REMOTE MULTIPLAYER STATE ---
   const [remotePlayers, setRemotePlayers] = useState<RemotePlayer[]>([]);
-  const [gameStatus, setGameStatus] = useState<"waiting" | "playing">("waiting");
+  const [gameStatus, setGameStatus] = useState<"waiting" | "playing" | "finished">("waiting");
+  const [globalGameOverData, setGlobalGameOverData] = useState<{
+    standings: { name: string; roundPoints: number; prevScore: number; totalScore: number }[];
+    updatedPlayers: RemotePlayer[];
+  } | null>(null);
   const [activeTurnIndex, setActiveTurnIndex] = useState<number>(0);
   const [isHostRole, setIsHostRole] = useState<boolean>(false);
 
@@ -90,6 +94,24 @@ export default function Home() {
   // ==========================================
   // SUPABASE REALTIME MULTIPLAYER ENGINE
   // ==========================================
+
+  // Auto-detect finished game to display Global Game Over Modal
+  useEffect(() => {
+    if (gameStatus === "finished" && !globalGameOverData && (view === "host_game" || view === "player_game")) {
+      const activePlayers = remotePlayers.filter(p => !p.isHost);
+      const rawStandings = activePlayers.map((player) => {
+        const roundPoints = player.hand.reduce((sum, card) => sum + getCardPoints(card), 0);
+        const totalScore = player.score; // Already updated in DB by the winner
+        const prevScore = totalScore - roundPoints; // Derive prev score
+        return { name: player.name, roundPoints, prevScore, totalScore };
+      });
+      // Lowest score wins
+      rawStandings.sort((a, b) => a.totalScore - b.totalScore);
+      setGlobalGameOverData({ standings: rawStandings, updatedPlayers: remotePlayers });
+    } else if (gameStatus !== "finished" && globalGameOverData) {
+      setGlobalGameOverData(null);
+    }
+  }, [gameStatus, remotePlayers, view, globalGameOverData]);
 
   const subscribeToRoom = (code: string, myName: string) => {
     // 1. Bersihkan channel lama secara aman (Jangan biarkan error mematikan aplikasi)
@@ -339,6 +361,21 @@ export default function Home() {
     setDeck(finalReadyState.deck);
     setDiscardPile(finalReadyState.discard_pile);
     setView("host_game");
+  };
+
+  // 3.4 Host Action: Trigger Global End Game (Calculates points and shows modal for everyone)
+  const handleTriggerGlobalEndGame = async (updatedPlayers: RemotePlayer[]) => {
+    if (!roomCode) return;
+    
+    const updatedState: RemoteGameState = {
+      status: "finished",
+      deck,
+      discard_pile: discardPile,
+      players: updatedPlayers,
+      turn_index: activeTurnIndex
+    };
+
+    await updateRemoteRoom(updatedState);
   };
 
   // 3.5 Host Action: End current game round, commit final scores and send players back to lobby
@@ -704,11 +741,38 @@ export default function Home() {
       return p;
     });
 
+    let finalStatus: RemoteGameState["status"] = "playing";
+    let finalPlayers = nextPlayers;
+
+    // DETEKSI KONDISI DECK HABIS SAAT MENGAMBIL KARTU
+    if (updatedDeck.length === 0) {
+      finalStatus = "finished";
+      
+      const rawStandings = playingPlayers.map((player) => {
+        const pHand = player.name.toUpperCase() === playerName.toUpperCase() ? updatedHand : player.hand;
+        const roundPoints = pHand.reduce((sum, card) => sum + getCardPoints(card), 0);
+        const prevScore = player.score || 0;
+        const totalScore = prevScore + roundPoints;
+        return { name: player.name, totalScore };
+      });
+
+      finalPlayers = remotePlayers.map((p) => {
+        if (p.isHost) return p;
+        const match = rawStandings.find((s) => s.name === p.name);
+        return {
+          ...p,
+          hand: p.name.toUpperCase() === playerName.toUpperCase() ? updatedHand : p.hand,
+          score: match ? match.totalScore : p.score,
+          hasDrawn: false
+        };
+      });
+    }
+
     const updatedState: RemoteGameState = {
-      status: "playing",
+      status: finalStatus,
       deck: updatedDeck,
       discard_pile: discardPile,
-      players: nextPlayers,
+      players: finalPlayers,
       turn_index: activeTurnIndex
     };
 
@@ -794,11 +858,38 @@ export default function Home() {
       return p;
     });
 
+    let finalStatus: RemoteGameState["status"] = "playing";
+    let finalPlayers = nextPlayers;
+
+    // DETEKSI KONDISI MENANG (KARTU HABIS) ATAU DECK HABIS
+    if (updatedHand.length === 0 || deck.length === 0) {
+      finalStatus = "finished";
+      
+      const rawStandings = playingPlayers.map((player) => {
+        const pHand = player.name.toUpperCase() === playerName.toUpperCase() ? updatedHand : player.hand;
+        const roundPoints = pHand.reduce((sum, card) => sum + getCardPoints(card), 0);
+        const prevScore = player.score || 0;
+        const totalScore = prevScore + roundPoints;
+        return { name: player.name, totalScore };
+      });
+
+      finalPlayers = remotePlayers.map((p) => {
+        if (p.isHost) return p;
+        const match = rawStandings.find((s) => s.name === p.name);
+        return {
+          ...p,
+          hand: p.name.toUpperCase() === playerName.toUpperCase() ? updatedHand : p.hand,
+          score: match ? match.totalScore : p.score,
+          hasDrawn: false
+        };
+      });
+    }
+
     const updatedState: RemoteGameState = {
-      status: "playing",
+      status: finalStatus,
       deck: deck,
       discard_pile: updatedDiscard,
-      players: nextPlayers,
+      players: finalPlayers,
       turn_index: nextTurnIdx
     };
 
@@ -1353,6 +1444,101 @@ export default function Home() {
       {/* ========================================= */}
       {/* 1. LANDING VIEW (MINIMALIST)              */}
       {/* ========================================= */}
+
+      {/* IMMERSIVE GLOBAL GAME OVER & SCOREBOARD STANDINGS OVERLAY */}
+      {globalGameOverData && (
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
+          {/* Glassmorphic Modal Container */}
+          <div className="w-full max-w-md bg-[#03100c]/90 border border-emerald-900/30 rounded-3xl shadow-[0_25px_70px_rgba(0,0,0,0.9)] p-6 relative overflow-hidden animate-scale-up">
+            {/* Emerald glow orb in background */}
+            <div className="absolute -top-24 -left-24 w-64 h-64 bg-emerald-600/10 rounded-full blur-3xl pointer-events-none" />
+            <div className="absolute -bottom-24 -right-24 w-64 h-64 bg-emerald-600/10 rounded-full blur-3xl pointer-events-none" />
+            
+            {/* Top Trophy & Title Header */}
+            <div className="flex flex-col items-center text-center mb-6 relative z-10">
+              <div className="w-16 h-16 rounded-full bg-emerald-950 border border-emerald-700/40 flex items-center justify-center shadow-[0_0_30px_rgba(16,185,129,0.2)] mb-3 animate-bounce">
+                <span className="text-3xl">🏆</span>
+              </div>
+              <span className="text-[9px] font-mono font-black text-emerald-500 uppercase tracking-[0.3em] leading-none mb-2">
+                Permainan Selesai
+              </span>
+              <h2 className="text-lg font-medium text-zinc-100 tracking-widest uppercase">
+                KLASEMEN PEMENANG
+              </h2>
+            </div>
+
+            {/* Standings List Table */}
+            <div className="space-y-2.5 mb-7 relative z-10">
+              {globalGameOverData.standings.map((entry, idx) => {
+                const isWinner = idx === 0;
+                return (
+                  <div 
+                    key={entry.name}
+                    className={`flex justify-between items-center px-4 py-3.5 rounded-xl border transition-all duration-300 ${
+                      isWinner
+                        ? "bg-emerald-950/30 border-emerald-700/40 shadow-[inset_0_0_20px_rgba(16,185,129,0.1)]"
+                        : "bg-zinc-950/50 border-zinc-900/80 hover:border-zinc-800"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      {/* Position Badge */}
+                      <div className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-[10px] border ${
+                        idx === 0
+                          ? "bg-amber-500/20 border-amber-500/60 text-amber-400"
+                          : idx === 1
+                          ? "bg-zinc-400/20 border-zinc-400/60 text-zinc-300"
+                          : idx === 2
+                          ? "bg-amber-800/20 border-amber-800/60 text-amber-600"
+                          : "bg-zinc-900 border-zinc-800 text-zinc-600"
+                      }`}>
+                        {idx + 1}
+                      </div>
+                      
+                      {/* Player Identity */}
+                      <div className="flex flex-col">
+                        <span className={`text-xs font-bold tracking-wide uppercase ${isWinner ? "text-emerald-400" : "text-zinc-200"}`}>
+                          {entry.name}
+                        </span>
+                        <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-wider">
+                          Sisa Kartu: <span className={entry.roundPoints > 0 ? "text-red-500/80" : "text-emerald-500/80"}>+{entry.roundPoints}</span>
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Cumulative Score Badge */}
+                    <div className="flex flex-col items-end">
+                      <span className={`text-[14px] font-black font-mono ${isWinner ? "text-emerald-400" : "text-zinc-100"}`}>
+                        {entry.totalScore}
+                      </span>
+                      <span className="text-[7px] font-mono text-zinc-600 uppercase tracking-widest leading-none mt-0.5">
+                        Total Poin
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Footer Actions Grid */}
+            <div className="flex gap-3 relative z-10">
+              {isHostRole ? (
+                <button
+                  onClick={() => handleFinishGame(globalGameOverData.updatedPlayers)}
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-black py-2.5 rounded-xl text-[10px] font-black font-mono tracking-widest uppercase transition-all cursor-pointer shadow-[0_0_25px_rgba(16,185,129,0.3)] active:scale-95 hover:shadow-[0_0_35px_rgba(16,185,129,0.4)]"
+                >
+                  Lanjut ke Lobby
+                </button>
+              ) : (
+                <div className="w-full text-center py-2.5 bg-zinc-900/50 rounded-xl border border-zinc-800 text-zinc-500 text-[10px] font-mono font-bold tracking-widest uppercase animate-pulse">
+                  Menunggu Host...
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================= */}
       {/* ========================================= */}
       {/* RENDER MODULAR GAME VIEWS                 */}
       {/* ========================================= */}
@@ -1388,6 +1574,7 @@ export default function Home() {
           setView={handleExitGame}
           chatMessages={chatMessages}
           finishGame={handleFinishGame}
+          triggerGlobalEndGame={handleTriggerGlobalEndGame}
         />
       )}
 
