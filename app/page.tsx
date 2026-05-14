@@ -91,7 +91,12 @@ export default function Home() {
 
     // 6. View Routing
     setView((currView: ViewState) => {
+      // Jika status 'playing' tapi kita baru saja mulai (sedang animasi bagi kartu), 
+      // JANGAN pindah view dulu agar animasi muncul di atas lobby sebagai transisi.
       if (newState.status === "playing") {
+        // Jika sedang dealing, tetap di lobby sebentar
+        if (isDealingCards) return currView;
+
         if (currView === "player_lobby") return "player_game";
         if (currView === "host_lobby") return "host_game";
       } else if (newState.status === "waiting") {
@@ -115,12 +120,13 @@ export default function Home() {
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [showGlobalMenu, setShowGlobalMenu] = useState(false);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
-  const [fireTaunt, setFireTaunt] = useState<{ active: boolean, sender: string | null }>({ active: false, sender: null });
+  const [fireTaunt, setFireTaunt] = useState<{ active: boolean, sender: string | null, target: string | null }>({ active: false, sender: null, target: null });
+  const [hostFireTaunt, setHostFireTaunt] = useState<{ sender: string; target: string } | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   
   // --- REMOTE MULTIPLAYER STATE ---
   const [remotePlayers, setRemotePlayers] = useState<RemotePlayer[]>([]);
-  const [gameStatus, setGameStatus] = useState<"waiting" | "playing" | "finished">("waiting");
+  const [gameStatus, setGameStatus] = useState<"waiting" | "playing" | "showdown" | "finished">("waiting");
   const [globalGameOverData, setGlobalGameOverData] = useState<{
     standings: {
       name: string;
@@ -144,6 +150,8 @@ export default function Home() {
 
   const [isDealingCards, setIsDealingCards] = useState(false);
   const [showWhoStartsModal, setShowWhoStartsModal] = useState<{ name: string; isMe: boolean } | null>(null);
+  const [showMyTurnModal, setShowMyTurnModal] = useState(false);
+  const lastTurnNotifyRef = useRef<number>(-1);
 
   // --- GAME STATE ---
   const [deck, setDeck] = useState<Card[]>([]);
@@ -160,7 +168,7 @@ export default function Home() {
 
   // Derived backward-compatible opponents state from active Remote Players!
   const bots = remotePlayers
-    .filter(p => p.name !== (playerName || "Host"))
+    .filter(p => !p.isHost && p.name.toUpperCase() !== (playerName || "").toUpperCase())
     .map(p => ({
       name: p.name,
       cardCount: p.hand.length
@@ -175,36 +183,35 @@ export default function Home() {
     if (gameStatus === "finished" && !globalGameOverData && (view === "host_game" || view === "player_game")) {
       const activePlayers = remotePlayers.filter(p => !p.isHost);
       const rawStandings = activePlayers.map((player) => {
+        const isWinner = player.hand.length === 0;
         let roundPoints = player.hand.reduce((sum, card) => sum + getCardPoints(card), 0);
         
         // Jika pemain menang (tangan kosong): hitung bonus tutup (jika ada) + poin meld
-        if (player.hand.length === 0) {
+        if (isWinner) {
           const topCard = discardPile.length > 0 ? discardPile[0] : null;
           // Hanya beri bonus 10x jika kartu teratas buangan dibuang oleh si pemenang (Tutup Kartu)
           const isTutupWin = topCard && topCard.thrownBy === player.name;
           const closingBonus = isTutupWin ? getCardPoints(topCard as Card) * 10 : 0;
           
           const meldPoints = (player.melds || []).reduce((sum: number, group: Card[]) => sum + getMeldPoints(group), 0);
-          roundPoints = -(closingBonus + meldPoints);
-          
-          const totalScore = player.score;
-          const prevScore = totalScore - roundPoints;
-          return {
-            name: player.name,
-            roundPoints,
-            prevScore,
-            totalScore,
-            melds: (player.melds || []) as Card[][],
-            closingCard: isTutupWin ? (topCard as Card) : undefined,
-          };
+          roundPoints = (closingBonus + meldPoints); // Bonus positive
+        } else {
+          roundPoints = -roundPoints; // Penalty negative (hutang/minus)
         }
 
         const totalScore = player.score;
         const prevScore = totalScore - roundPoints;
-        return { name: player.name, roundPoints, prevScore, totalScore };
+        return {
+          name: player.name,
+          roundPoints,
+          prevScore,
+          totalScore,
+          melds: (player.melds || []) as Card[][],
+          closingCard: isWinner && discardPile.length > 0 && discardPile[0].thrownBy === player.name ? discardPile[0] : undefined,
+        };
       });
-      // Lowest score wins
-      rawStandings.sort((a, b) => a.totalScore - b.totalScore);
+      // Highest score wins (Indonesian Style)
+      rawStandings.sort((a, b) => b.totalScore - a.totalScore);
       setGlobalGameOverData({ standings: rawStandings, updatedPlayers: remotePlayers });
     } else if (gameStatus !== "finished" && globalGameOverData) {
       setGlobalGameOverData(null);
@@ -261,10 +268,13 @@ export default function Home() {
                   
                   // ONLY trigger if I am the target!
                   if (newState.fireTaunt.target.toUpperCase() === myName.toUpperCase()) {
-                    setFireTaunt({ active: true, sender: newState.fireTaunt.sender });
+                    setFireTaunt({ active: true, sender: newState.fireTaunt.sender, target: newState.fireTaunt.target });
                     // Auto clean-up after 2.2s
-                    setTimeout(() => setFireTaunt({ active: false, sender: null }), 2200);
+                    setTimeout(() => setFireTaunt({ active: false, sender: null, target: null }), 2200);
                   }
+                  // Always update host view with the full taunt event
+                  setHostFireTaunt({ sender: newState.fireTaunt.sender, target: newState.fireTaunt.target });
+                  setTimeout(() => setHostFireTaunt(null), 2500);
                 }
 
                 // Detect Game Start for Animation
@@ -273,6 +283,9 @@ export default function Home() {
                   // Start Dealing Animation Sequence
                   setTimeout(() => {
                     setIsDealingCards(false);
+                    // FORCE ROUTING AFTER ANIMATION (Since applyRemoteState might be waiting)
+                    setView(v => v === "player_lobby" ? "player_game" : v);
+
                     const playingPlayers = newState.players.filter(p => !p.isHost);
                     const startingPlayer = playingPlayers[newState.turn_index];
                     if (startingPlayer) {
@@ -303,11 +316,15 @@ export default function Home() {
             console.log("🔥 [BROADCAST] FIRE RECEIVED for target:", payload.target, "by sender:", payload.sender);
             
             // Trigger overlay if target matches OR if it's from ME (self-broadcast test)
-            if (payload.target.toUpperCase() === myName.toUpperCase()) {
-              console.log("🎯 [BROADCAST] I AM THE TARGET! Burning...");
-              setFireTaunt({ active: true, sender: payload.sender });
-              setTimeout(() => setFireTaunt({ active: false, sender: null }), 2200);
+            if (payload.target.toUpperCase() === myName.toUpperCase() || payload.sender.toUpperCase() === myName.toUpperCase()) {
+              console.log("🎯 [BROADCAST] Target/Sender match! Burning...");
+              setFireTaunt({ active: true, sender: payload.sender, target: payload.target });
+              setTimeout(() => setFireTaunt({ active: false, sender: null, target: null }), 2200);
             }
+
+            // ALWAYS trigger hostFireTaunt if we are currently in host game view!
+            setHostFireTaunt({ sender: payload.sender, target: payload.target });
+            setTimeout(() => setHostFireTaunt(null), 2500);
           }
         )
         .subscribe((status) => {
@@ -481,16 +498,29 @@ export default function Home() {
     // Write state update to Supabase - will auto sync via postgres channels!
     await updateRemoteRoom(finalReadyState);
 
-    // ==========================================
-    // OPTIMISTIC LOCAL UI UPDATE
-    // ==========================================
     // Melompati jeda polling agar Host seketika masuk ke layar meja game!
     setRemotePlayers(finalReadyState.players);
     setGameStatus(finalReadyState.status);
     setActiveTurnIndex(finalReadyState.turn_index);
     setDeck(finalReadyState.deck);
     setDiscardPile(finalReadyState.discard_pile);
-    setView("host_game");
+
+    // TRIGGER DEALING ANIMATION FOR HOST TOO!
+    setIsDealingCards(true);
+    setTimeout(() => {
+      setIsDealingCards(false);
+      setView("host_game");
+      
+      const playingPlayers = finalReadyState.players.filter(p => !p.isHost);
+      const startingPlayer = playingPlayers[finalReadyState.turn_index];
+      if (startingPlayer) {
+        setShowWhoStartsModal({ 
+          name: startingPlayer.name, 
+          isMe: startingPlayer.name.toUpperCase() === playerName.toUpperCase() 
+        });
+        setTimeout(() => setShowWhoStartsModal(null), 3500);
+      }
+    }, 3000);
   };
 
   // 3.4 Host Action: Trigger Global End Game (Calculates points and shows modal for everyone)
@@ -903,9 +933,15 @@ export default function Home() {
     }
 
     const nextDiscard = [...discardPile];
-    const availableToTake = Math.min(nextDiscard.length, 7);
-    const countToTake = availableToTake - index;
-    const takenCards = nextDiscard.splice(index, countToTake);
+    // Rule: Cannot take more than 7 cards from discard pile
+    const countToTake = index + 1;
+    if (countToTake > 7) {
+      setToastMsg("Maksimal ambil 7 kartu dari buangan! 🚫");
+      setTimeout(() => setToastMsg(null), 2000);
+      return;
+    }
+
+    const takenCards = nextDiscard.splice(0, countToTake);
     const updatedHand = [...playerHand, ...takenCards];
 
     const nextPlayers = remotePlayers.map((p) => {
@@ -962,36 +998,13 @@ export default function Home() {
 
     // DETEKSI KONDISI MENANG (KARTU HABIS) ATAU DECK HABIS
     if (updatedHand.length === 0 || deck.length === 0) {
-      finalStatus = "finished";
+      finalStatus = "showdown";
       
-      const rawStandings = playingPlayers.map((player) => {
-        const isWinner = player.name.toUpperCase() === playerName.toUpperCase() && updatedHand.length === 0;
-        const pHand = player.name.toUpperCase() === playerName.toUpperCase() ? updatedHand : player.hand;
-        let roundPoints = pHand.reduce((sum, card) => sum + getCardPoints(card), 0);
-        
-        // LOGIC TUTUP KARTU: Bonus penutup (10x) + poin semua kartu meld yang sudah diturunkan
-        if (isWinner) {
-          const closingBonus = getCardPoints(targetCard) * 10;
-          // Hitung total poin kartu yang sudah diturunkan (melds)
-          const myMelds = remotePlayers.find(p => p.name.toUpperCase() === playerName.toUpperCase())?.melds || [];
-          const meldPoints = myMelds.reduce((sum: number, group: Card[]) => sum + getMeldPoints(group), 0);
-          roundPoints = -(closingBonus + meldPoints); // Negatif agar total poin berkurang (skor terendah menang)
-        }
-
-        const prevScore = player.score || 0;
-        const totalScore = prevScore + roundPoints;
-        return { name: player.name, totalScore };
-      });
-
       finalPlayers = remotePlayers.map((p) => {
-        if (p.isHost) return p;
-        const match = rawStandings.find((s) => s.name === p.name);
-        return {
-          ...p,
-          hand: p.name.toUpperCase() === playerName.toUpperCase() ? updatedHand : p.hand,
-          score: match ? match.totalScore : p.score,
-          hasDrawn: false
-        };
+        if (p.name.toUpperCase() === playerName.toUpperCase()) {
+          return { ...p, hand: updatedHand, hasDrawn: false, isDoneShowdown: true };
+        }
+        return { ...p, isDoneShowdown: p.isHost }; // Host is always done
       });
     }
 
@@ -1006,12 +1019,17 @@ export default function Home() {
     await updateRemoteRoom(updatedState);
     
     // OPTIMISTIC LOCAL UPDATE:
-    // Membuang kartu instan dan langsung mengalihkan giliran tanpa lag!
     setPlayerHand(updatedHand);
     setDiscardPile(updatedDiscard);
-    setRemotePlayers(nextPlayers);
+    setRemotePlayers(finalPlayers);
     setActiveTurnIndex(nextTurnIdx);
     setHasDrawnThisTurn(false);
+    setGameStatus(finalStatus);
+
+    if (finalStatus === "showdown") {
+      setToastMsg("🏆 TUTUP KARTU! BABAK TURUN KARTU DIMULAI.");
+    }
+    setTimeout(() => setToastMsg(null), 2500);
   };
 
   const meldSelectedCards = async (cardIds: string[]): Promise<boolean> => {
@@ -1053,31 +1071,12 @@ export default function Home() {
 
     // JIKA KARTU HABIS SETELAH TURUN (MELD): PEMAIN MENANG!
     if (updatedHand.length === 0) {
-      finalStatus = "finished";
-      const playingPlayers = nextPlayers.filter(p => !p.isHost);
-      
-      const rawStandings = playingPlayers.map((player) => {
-        const isWinner = player.name.toUpperCase() === playerName.toUpperCase();
-        let roundPoints = player.hand.reduce((sum, card) => sum + getCardPoints(card), 0);
-        
-        if (isWinner) {
-          // Menang lewat Turun Kartu (Meld): Hanya dapat poin kartu yang turun (tidak ada bonus tutup 10x)
-          const meldPoints = updatedMelds.reduce((sum: number, group: Card[]) => sum + getMeldPoints(group), 0);
-          roundPoints = -meldPoints; 
-        }
-
-        const prevScore = player.score || 0;
-        const totalScore = prevScore + roundPoints;
-        return { name: player.name, totalScore };
-      });
-
+      finalStatus = "showdown";
       finalPlayers = nextPlayers.map((p) => {
-        if (p.isHost) return p;
-        const match = rawStandings.find((s) => s.name === p.name);
-        return {
-          ...p,
-          score: match ? match.totalScore : p.score,
-        };
+        if (p.name.toUpperCase() === playerName.toUpperCase()) {
+          return { ...p, hand: updatedHand, isDoneShowdown: true };
+        }
+        return { ...p, isDoneShowdown: p.isHost };
       });
     }
 
@@ -1096,8 +1095,8 @@ export default function Home() {
     setRemotePlayers(finalPlayers);
     setGameStatus(finalStatus);
 
-    if (finalStatus === "finished") {
-      setToastMsg("🏆 PERMAINAN SELESAI!");
+    if (finalStatus === "showdown") {
+      setToastMsg("🏆 KARTU HABIS! BABAK TURUN KARTU DIMULAI.");
     } else {
       setToastMsg("🎉 Sukses Menurunkan Kartu!");
     }
@@ -1175,6 +1174,71 @@ export default function Home() {
     }
   };
 
+  const finishShowdown = async () => {
+    if (gameStatus !== "showdown") return;
+
+    const nextPlayers = remotePlayers.map(p => {
+      if (p.name.toUpperCase() === playerName.toUpperCase()) {
+        return { ...p, isDoneShowdown: true };
+      }
+      return p;
+    });
+
+    const allPlayingPlayers = nextPlayers.filter(p => !p.isHost);
+    const everyoneDone = allPlayingPlayers.every(p => p.isDoneShowdown);
+
+    let finalStatus: RemoteGameState["status"] = "showdown";
+    let finalPlayers = nextPlayers;
+
+    if (everyoneDone) {
+      finalStatus = "finished";
+      
+      const rawStandings = allPlayingPlayers.map((player) => {
+        const isWinner = player.hand.length === 0;
+        let roundPoints = player.hand.reduce((sum, card) => sum + getCardPoints(card), 0);
+        
+        if (isWinner) {
+          const meldPoints = player.melds?.reduce((sum, group) => sum + getMeldPoints(group), 0) || 0;
+          roundPoints = meldPoints; // Bonus positive
+        } else {
+          roundPoints = -roundPoints; // Penalty negative
+        }
+
+        const prevScore = player.score || 0;
+        const totalScore = prevScore + roundPoints;
+        return { name: player.name, totalScore };
+      });
+
+      finalPlayers = nextPlayers.map((p) => {
+        if (p.isHost) return p;
+        const match = rawStandings.find((s) => s.name === p.name);
+        return {
+          ...p,
+          score: match ? match.totalScore : p.score,
+        };
+      });
+    }
+
+    const updatedState: RemoteGameState = {
+      status: finalStatus,
+      deck: deck,
+      discard_pile: discardPile,
+      players: finalPlayers,
+      turn_index: activeTurnIndex
+    };
+
+    await updateRemoteRoom(updatedState);
+    setRemotePlayers(finalPlayers);
+    setGameStatus(finalStatus);
+    
+    if (finalStatus === "finished") {
+      setToastMsg("🏆 SEMUA SELESAI! SKOR DIHITUNG.");
+    } else {
+      setToastMsg("✅ Anda Siap! Menunggu pemain lain...");
+    }
+    setTimeout(() => setToastMsg(null), 3000);
+  };
+
   // Funny Interactive Taunt with REAL-TIME BROADCAST Sync
   const sendFireTaunt = async (targetName: string) => {
     console.log(`🚀 [TAUNT] Attempting to burn ${targetName}...`);
@@ -1242,15 +1306,36 @@ export default function Home() {
   // Derived Turn Tracking Variables
   const activePlayingPlayers = remotePlayers.filter(p => !p.isHost);
   const currentMyIdx = activePlayingPlayers.findIndex(p => p.name.toUpperCase() === playerName.toUpperCase());
-  const isMyTurn = currentMyIdx === activeTurnIndex;
+  const isMyTurn = (gameStatus === "showdown") ? true : (currentMyIdx === activeTurnIndex);
+  
+  // --- AUTO-TURN NOTIFICATION MODAL ---
+  useEffect(() => {
+    // Only show if it's currently MY turn and it's a NEW turn cycle for me
+    // (And specifically only in 'playing' status, showdown handles itself)
+    if (gameStatus === "playing" && isMyTurn) {
+      if (activeTurnIndex !== lastTurnNotifyRef.current) {
+        setShowMyTurnModal(true);
+        lastTurnNotifyRef.current = activeTurnIndex;
+      }
+    } else {
+      setShowMyTurnModal(false);
+      // Reset tracker when it's NOT my turn, so it triggers again next time
+      // This is critical for 2-player games where activeTurnIndex might be the same.
+      if (!isMyTurn) {
+        lastTurnNotifyRef.current = -1;
+      }
+    }
+  }, [isMyTurn, activeTurnIndex, gameStatus]);
+
   const activePlayerName = activePlayingPlayers[activeTurnIndex]?.name || "...";
 
   const circularDiscards = discardPile;
   
   const selectedDiscardCard = selectedDiscardIndex !== null ? circularDiscards[selectedDiscardIndex] : null;
-  const isDiscardSelectionValid = selectedDiscardCard ? canDrawDiscardCard(selectedDiscardCard, playerHand) : false;
+  const myExistingMelds = remotePlayers.find((p) => p.name.toUpperCase() === playerName.toUpperCase())?.melds || [];
+  const isDiscardSelectionValid = selectedDiscardCard ? canDrawDiscardCard(selectedDiscardCard, playerHand, myExistingMelds) : false;
   
-  const totalHandPoints = playerHand.reduce((sum, card) => sum + getCardPoints(card), 0);
+
 
   // Dynamically construct the deep link for scanning
   const getJoinLink = () => {
@@ -1622,22 +1707,76 @@ export default function Home() {
       {/* 2. WHO STARTS FIRST MODAL */}
       {showWhoStartsModal && (
         <div className="fixed inset-0 z-[100001] flex items-center justify-center px-6 animate-fade-in">
-          <div className="absolute inset-0 bg-black/85 backdrop-blur-xl" />
-          <div className="relative w-full max-w-sm bg-[#051712]/95 border border-emerald-900/40 rounded-[2.5rem] p-10 shadow-2xl text-center animate-scale-up">
-            <div className="mb-6 flex justify-center">
-              <div className="w-20 h-20 rounded-full bg-emerald-500/20 border border-emerald-500/50 flex items-center justify-center animate-bounce shadow-[0_0_30px_rgba(16,185,129,0.3)]">
-                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-md" />
+          <div className="relative w-full max-w-[300px] bg-zinc-950/90 border border-zinc-800 rounded-[2.5rem] p-10 shadow-[0_30px_60px_-15px_rgba(0,0,0,0.8)] text-center animate-scale-up">
+            <div className="mb-8 flex justify-center">
+              <div className="w-20 h-20 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center relative">
+                <div className="absolute inset-0 rounded-full border border-emerald-500/40 animate-ping opacity-20" />
+                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="6" width="20" height="12" rx="2" />
+                  <path d="M12 12h.01" />
+                  <path d="M17 12h.01" />
+                  <path d="M7 12h.01" />
                 </svg>
               </div>
             </div>
-            <h2 className="text-zinc-500 font-mono text-[10px] tracking-[0.4em] uppercase mb-2 leading-none">Giliran Pertama</h2>
-            <div className="text-4xl font-black text-white mb-4 tracking-tighter">
-              {showWhoStartsModal.isMe ? "GILIRAN ANDA" : showWhoStartsModal.name.toUpperCase()}
+            
+            <span className="text-emerald-400 font-mono text-[9px] tracking-[0.4em] uppercase mb-2 font-black block opacity-80">
+              GILIRAN PERTAMA
+            </span>
+            
+            <h2 className="text-[28px] font-black text-white mb-8 tracking-tight leading-none uppercase">
+              {showWhoStartsModal.isMe ? "ANDA" : showWhoStartsModal.name.toUpperCase()}
+            </h2>
+
+            <div className="py-3 px-6 bg-zinc-900/50 border border-zinc-800 rounded-2xl">
+              <span className="text-zinc-400 font-mono text-[10px] tracking-widest uppercase font-bold">
+                {showWhoStartsModal.isMe ? "Mulai Buang Kartu" : "Mohon Tunggu..."}
+              </span>
             </div>
-            <div className="text-emerald-400 font-mono text-[9px] tracking-widest uppercase py-2.5 px-6 border border-emerald-500/30 rounded-full inline-block bg-emerald-500/10">
-              {showWhoStartsModal.isMe ? "BUANG KARTU DULUAN" : "MOHON TUNGGU..."}
+          </div>
+        </div>
+      )}
+
+      {/* 3. YOUR TURN ALERT MODAL (CRITICAL UX FOR REMINDING PLAYERS) */}
+      {showMyTurnModal && (
+        <div className="fixed inset-0 z-[100005] flex items-center justify-center px-6 animate-fade-in pointer-events-none">
+          {/* Subtle Immersive Backdrop Blur */}
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-[6px]" />
+          
+          <div className="relative w-full max-w-[300px] bg-zinc-950/90 border border-zinc-800 rounded-[2.5rem] p-10 shadow-[0_30px_60px_-15px_rgba(0,0,0,0.8)] text-center animate-scale-up pointer-events-auto overflow-hidden">
+            {/* Subtle Gradient Accent */}
+            <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-transparent via-emerald-500/40 to-transparent" />
+
+            <div className="mb-6 flex justify-center">
+              <div className="w-20 h-20 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center relative">
+                {/* Pulse ring */}
+                <div className="absolute inset-0 rounded-full border border-emerald-500/40 animate-ping opacity-20" />
+                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="6" width="20" height="12" rx="2" />
+                  <path d="M12 12h.01" />
+                  <path d="M17 12h.01" />
+                  <path d="M7 12h.01" />
+                </svg>
+              </div>
             </div>
+            
+            <span className="text-emerald-400 font-mono text-[9px] tracking-[0.4em] uppercase mb-2 font-black block opacity-80">
+              GILIRAN ANDA
+            </span>
+            <h2 className="text-[26px] font-black text-white mb-8 tracking-tight leading-[1.1] px-2">
+              Saatnya Ambil<br/><span className="text-emerald-500">Kartu Baru</span>
+            </h2>
+            
+            <button
+              onClick={() => setShowMyTurnModal(false)}
+              className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-black rounded-2xl text-[11px] font-black font-mono tracking-widest uppercase transition-all active:scale-[0.98] shadow-[0_10px_30px_rgba(16,185,129,0.25)] cursor-pointer group flex items-center justify-center gap-2"
+            >
+              Mulai Bermain
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="group-hover:translate-x-1 transition-transform">
+                <path d="m9 18 6-6-6-6"/>
+              </svg>
+            </button>
           </div>
         </div>
       )}
@@ -1646,17 +1785,119 @@ export default function Home() {
       {/* INTERACTIVE GAME TAUNTS OVERLAYS        */}
       {/* ========================================= */}
       
-      {/* 1. Fullscreen Burning Fire Effect (Inner Ring) */}
-      {fireTaunt.active && (
-        <div className="fixed inset-0 pointer-events-none z-[99999] fiery-screen flex items-center justify-center">
-          {/* Glowing Retaliation Alert Center */}
-          <div className="bg-zinc-950/90 border border-red-800/50 backdrop-blur-md px-6 py-4 rounded-2xl flex flex-col items-center justify-center shadow-2xl shadow-red-950/60 select-none animate-pulse scale-90">
-            <span className="text-2xl mb-2 leading-none animate-bounce">🔥</span>
-            <span className="text-[8px] font-mono font-black text-red-600 uppercase tracking-[0.25em] block">SERANGAN API!</span>
-            <span className="text-[10px] font-medium tracking-widest text-zinc-200 uppercase mt-1.5">
-              {fireTaunt.sender} Membakar Layar Anda!
-            </span>
-          </div>
+      {/* 1. Fullscreen Burning Fire Effect — FLYING FIREBALLS */}
+      {fireTaunt.active && fireTaunt.target && fireTaunt.sender?.toUpperCase() !== playerName.toUpperCase() && (
+        <div className={`fixed inset-0 pointer-events-none z-[99999] overflow-hidden ${fireTaunt.target.toUpperCase() === playerName.toUpperCase() ? "screen-shake" : ""}`}>
+          {/* CSS Fireball Animations */}
+          <style dangerouslySetInnerHTML={{ __html: `
+            @keyframes fly-fireball-1 {
+              0%   { transform: translate(-120px, 60vh) scale(0.4) rotate(0deg); opacity: 0; }
+              10%  { opacity: 1; }
+              80%  { transform: translate(55vw, 40vh) scale(2) rotate(720deg); opacity: 1; }
+              100% { transform: translate(52vw, 42vh) scale(1.5) rotate(750deg); opacity: 0; }
+            }
+            @keyframes fly-fireball-2 {
+              0%   { transform: translate(110vw, 20vh) scale(0.3) rotate(0deg); opacity: 0; }
+              15%  { opacity: 1; }
+              80%  { transform: translate(40vw, 52vh) scale(2.5) rotate(-540deg); opacity: 1; }
+              100% { transform: translate(42vw, 50vh) scale(1.8) rotate(-570deg); opacity: 0; }
+            }
+            @keyframes fly-fireball-3 {
+              0%   { transform: translate(30vw, -80px) scale(0.5) rotate(0deg); opacity: 0; }
+              10%  { opacity: 1; }
+              75%  { transform: translate(48vw, 48vh) scale(2) rotate(480deg); opacity: 1; }
+              100% { transform: translate(48vw, 50vh) scale(1.5) rotate(510deg); opacity: 0; }
+            }
+            @keyframes impact-shake {
+              0%, 100% { transform: translate(0,0) rotate(0deg); }
+              10% { transform: translate(-12px, -6px) rotate(-3deg); }
+              20% { transform: translate(12px, 6px) rotate(3deg); }
+              30% { transform: translate(-8px, 4px) rotate(-2deg); }
+              40% { transform: translate(8px, -4px) rotate(2deg); }
+              50% { transform: translate(-4px, 4px) rotate(-1deg); }
+            }
+            @keyframes burn-flicker {
+              0%, 100% { opacity: 0.4; }
+              50% { opacity: 0.8; }
+            }
+            @keyframes ember-float {
+              0% { transform: translateY(0) rotate(0deg); opacity: 0; }
+              20% { opacity: 1; }
+              100% { transform: translateY(-100vh) rotate(360deg); opacity: 0; }
+            }
+            .fireball { position: absolute; filter: drop-shadow(0 0 15px #f97316); }
+            .fireball-1 { animation: fly-fireball-1 0.9s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards; }
+            .fireball-2 { animation: fly-fireball-2 1.0s cubic-bezier(0.25, 0.46, 0.45, 0.94) 0.1s forwards; }
+            .fireball-3 { animation: fly-fireball-3 0.8s cubic-bezier(0.25, 0.46, 0.45, 0.94) 0.05s forwards; }
+            .screen-shake { animation: impact-shake 0.6s ease 0.8s; }
+            .ember {
+              position: absolute; width: 4px; height: 4px; background: #fb923c; border-radius: 50%;
+              box-shadow: 0 0 10px #f97316; animation: ember-float 2s linear infinite;
+            }
+          `}} />
+
+          {/* Immersive Fire Vignette (Only if target) */}
+          {fireTaunt.target.toUpperCase() === playerName.toUpperCase() && (
+            <div className="absolute inset-0 z-0">
+              <div className="absolute inset-0 bg-red-600/10 mix-blend-overlay animate-[burn-flicker_0.1s_infinite]" />
+              <div className="absolute inset-0 shadow-[inset_0_0_150px_rgba(185,28,28,0.6)]" />
+              {/* Floating Embers */}
+              {[...Array(12)].map((_, i) => (
+                <div
+                  key={i}
+                  className="ember"
+                  style={{
+                    left: `${Math.random() * 100}%`,
+                    bottom: "-20px",
+                    animationDelay: `${Math.random() * 2}s`,
+                    opacity: Math.random()
+                  }}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Premium SVG Fireballs */}
+          {[1, 2, 3].map((n) => (
+            <div key={n} className={`fireball fireball-${n} top-0 left-0`}>
+              <svg width="60" height="60" viewBox="0 0 24 24" fill="none">
+                <defs>
+                  <radialGradient id={`fire-grad-${n}`} cx="50%" cy="50%" r="50%">
+                    <stop offset="0%" stopColor="#fff" />
+                    <stop offset="30%" stopColor="#fbbf24" />
+                    <stop offset="60%" stopColor="#f97316" />
+                    <stop offset="100%" stopColor="transparent" />
+                  </radialGradient>
+                </defs>
+                <path
+                  d="M12 2c0 1.1-.9 2-2 2s-2-.9-2-2c0-1.1.9-2 2-2s2 .9 2 2zm1 14c0 3.3-2.7 6-6 6s-6-2.7-6-6c0-1.7.7-3.2 1.8-4.2C3.1 10.7 4 8.7 4 6.5 4 4 5 2 7 1c-.7 1.3-1 2.8-1 4.5 0 3.9 3.1 7 7 7 .6 0 1.1-.1 1.6-.2-.4 1.1-.6 2.3-.6 3.7z"
+                  fill={`url(#fire-grad-${n})`}
+                >
+                  <animate attributeName="d" dur="0.2s" repeatCount="indefinite" values="M12 2c0 1.1-.9 2-2 2s-2-.9-2-2c0-1.1.9-2 2-2s2 .9 2 2zm1 14c0 3.3-2.7 6-6 6s-6-2.7-6-6c0-1.7.7-3.2 1.8-4.2C3.1 10.7 4 8.7 4 6.5 4 4 5 2 7 1c-.7 1.3-1 2.8-1 4.5 0 3.9 3.1 7 7 7 .6 0 1.1-.1 1.6-.2-.4 1.1-.6 2.3-.6 3.7z;M12 3c0 1.1-.9 2-2 2s-2-.9-2-2c0-1.1.9-2 2-2s2 .9 2 2zm1 13c0 3.3-2.7 6-6 6s-6-2.7-6-6c0-1.7.7-3.2 1.8-4.2C3.1 9.7 4 7.7 4 5.5 4 3 5 1 7 0c-.7 1.3-1 2.8-1 4.5 0 3.9 3.1 7 7 7 .6 0 1.1-.1 1.6-.2-.4 1.1-.6 2.3-.6 3.7z;M12 2c0 1.1-.9 2-2 2s-2-.9-2-2c0-1.1.9-2 2-2s2 .9 2 2zm1 14c0 3.3-2.7 6-6 6s-6-2.7-6-6c0-1.7.7-3.2 1.8-4.2C3.1 10.7 4 8.7 4 6.5 4 4 5 2 7 1c-.7 1.3-1 2.8-1 4.5 0 3.9 3.1 7 7 7 .6 0 1.1-.1 1.6-.2-.4 1.1-.6 2.3-.6 3.7z" />
+                </path>
+              </svg>
+            </div>
+          ))}
+
+          {/* Impact alert (Shows ONLY if you are the victim) */}
+          {fireTaunt.target.toUpperCase() === playerName.toUpperCase() && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="bg-zinc-950/95 border border-red-700/70 backdrop-blur-md px-10 py-6 rounded-3xl flex flex-col items-center gap-2 shadow-[0_0_80px_rgba(239,68,68,0.5)] select-none animate-scale-up">
+                <div className="w-12 h-12 bg-red-500/20 rounded-full flex items-center justify-center mb-1">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5">
+                    <path d="M12 2c0 1.1-.9 2-2 2s-2-.9-2-2c0-1.1.9-2 2-2s2 .9 2 2z" />
+                    <path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3-4-4-6.5c-.66 1.9-2 4.5-1 7 0 2-3 3-3 6a6 6 0 0 0 4 6z" />
+                  </svg>
+                </div>
+                <span className="text-[10px] font-mono font-black text-red-500 uppercase tracking-[0.4em] block">
+                  WASPADA!
+                </span>
+                <span className="text-[13px] font-bold tracking-tight text-zinc-100 uppercase">
+                  {fireTaunt.sender} Membakar Anda!
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1730,10 +1971,10 @@ export default function Home() {
                             {entry.name}
                           </span>
                           <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-wider">
-                            {entry.roundPoints < 0 ? (
-                              <>Bonus Tutup: <span className="text-emerald-400 font-bold">+{Math.abs(entry.roundPoints)}</span></>
+                            {entry.roundPoints > 0 ? (
+                              <>Bonus Tutup: <span className="text-emerald-400 font-bold">+{entry.roundPoints}</span></>
                             ) : (
-                              <>Sisa Kartu: <span className={entry.roundPoints > 0 ? "text-red-500/80" : "text-emerald-500/80"}>+{entry.roundPoints}</span></>
+                              <>Hutang (Minus): <span className="text-red-500/80">-{Math.abs(entry.roundPoints)}</span></>
                             )}
                           </span>
                         </div>
@@ -1742,7 +1983,7 @@ export default function Home() {
                       {/* Cumulative Score Badge */}
                       <div className="flex flex-col items-end">
                         <span className={`text-[14px] font-black font-mono ${isWinner ? "text-emerald-400" : entry.totalScore < 0 ? "text-red-400" : "text-zinc-100"}`}>
-                          {entry.totalScore < 0 ? `+${Math.abs(entry.totalScore)}` : entry.totalScore}
+                          {entry.totalScore > 0 ? `+${entry.totalScore}` : entry.totalScore}
                         </span>
                         <span className="text-[7px] font-mono text-zinc-600 uppercase tracking-widest leading-none mt-0.5">
                           Total Poin
@@ -1867,6 +2108,7 @@ export default function Home() {
           initGame={initGame}
           setView={handleExitGame}
           chatMessages={chatMessages}
+          fireTauntEvent={hostFireTaunt}
           finishGame={handleFinishGame}
           triggerGlobalEndGame={handleTriggerGlobalEndGame}
         />
@@ -1886,7 +2128,9 @@ export default function Home() {
           isMyTurn={isMyTurn}
           hasDrawnThisTurn={hasDrawnThisTurn}
           activePlayerName={activePlayerName}
-          totalHandPoints={totalHandPoints}
+          playerName={playerName}
+          remotePlayers={remotePlayers}
+          turnIndex={activeTurnIndex}
           bots={bots}
           discardPile={discardPile}
           deckCount={deck.length}
@@ -1897,14 +2141,19 @@ export default function Home() {
           setPlayerHand={setPlayerHand}
           setView={handleExitGame}
           sendFireTaunt={sendFireTaunt}
+          sendChatMessage={sendChatMessage}
           drawFromDiscardAtIndex={drawFromDiscardAtIndex}
           drawFromStock={drawFromStock}
           sortMyHand={sortMyHand}
           discardSelected={discardSelected}
           meldSelectedCards={meldSelectedCards}
+          finishShowdown={finishShowdown}
+          gameStatus={gameStatus}
           syncHandSort={syncHandSort}
           setToastMsg={setToastMsg}
+          onShowLeaderboard={() => setShowLeaderboard(true)}
           melds={remotePlayers.find((p) => p.name.toUpperCase() === playerName.toUpperCase())?.melds || []}
+          isDoneShowdown={remotePlayers.find((p) => p.name.toUpperCase() === playerName.toUpperCase())?.isDoneShowdown || false}
         />
       )}
 

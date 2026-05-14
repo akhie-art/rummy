@@ -13,24 +13,19 @@ const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
   onClose,
   remotePlayers,
 }) => {
-  const [mode, setMode] = useState<"live" | "tournament">("live");
+  const mode = "tournament";
 
   if (!isOpen) return null;
 
   // Exclude the Host Spectator from competitive rankings
   const activePlayers = remotePlayers.filter((p) => !p.isHost);
 
-  // Calculate data based on mode
+  // Calculate data based on tournament scores
   const rankedList = activePlayers
     .map((player) => {
-      const livePoints = player.hand.reduce(
-        (sum, card) => sum + getCardPoints(card),
-        0
-      );
       return {
         ...player,
-        livePoints,
-        displayScore: mode === "live" ? livePoints : player.score,
+        displayScore: player.score,
       };
     })
     // Remi Indonesia Sort: LOWEST score wins (ascending sort)!
@@ -54,13 +49,13 @@ const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
         {/* Modal Header */}
         <div className="p-5 border-b border-zinc-800/50 relative z-10 flex justify-between items-center bg-black/20">
           <div className="flex items-center gap-2.5">
-            <span className="text-lg">📊</span>
+            <span className="text-lg">🏆</span>
             <div>
               <h3 className="text-sm font-medium tracking-[0.2em] uppercase text-zinc-100 leading-none">
-                Klasemen Skor
+                Klasemen Turnamen
               </h3>
               <span className="text-[8px] font-mono text-emerald-500 uppercase tracking-widest mt-1 block leading-none">
-                Paling Rendah = Menang
+                Akumulasi Poin Penalti
               </span>
             </div>
           </div>
@@ -70,34 +65,6 @@ const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
           >
             ×
           </button>
-        </div>
-
-        {/* Mode Switcher (🔥 Live vs 🏆 Tournament) */}
-        <div className="p-4 flex relative z-10">
-          <div className="w-full bg-black/30 border border-zinc-900 rounded-xl p-1 flex items-center gap-1">
-            <button
-              onClick={() => setMode("live")}
-              className={`flex-1 py-2 text-[9px] font-medium font-mono uppercase tracking-wider rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                mode === "live"
-                  ? "bg-emerald-950/40 border border-emerald-900/50 text-emerald-400 shadow-sm"
-                  : "text-zinc-500 hover:text-zinc-300 hover:bg-black/20 border border-transparent"
-              }`}
-            >
-              <span>🔥</span>
-              <span>Babak Aktif</span>
-            </button>
-            <button
-              onClick={() => setMode("tournament")}
-              className={`flex-1 py-2 text-[9px] font-medium font-mono uppercase tracking-wider rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                mode === "tournament"
-                  ? "bg-emerald-950/40 border border-emerald-900/50 text-emerald-400 shadow-sm"
-                  : "text-zinc-500 hover:text-zinc-300 hover:bg-black/20 border border-transparent"
-              }`}
-            >
-              <span>🏆</span>
-              <span>Turnamen</span>
-            </button>
-          </div>
         </div>
 
         {/* Ranked Items List */}
@@ -185,9 +152,7 @@ const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
         {/* Bottom Footer Bar */}
         <div className="p-3 text-center bg-black/30 border-t border-zinc-900/60 relative z-10">
           <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-widest">
-            {mode === "live"
-              ? "• Live tracking aktif •"
-              : "• Total skor turnamen terkumpul •"}
+            • Total skor turnamen terkumpul •
           </span>
         </div>
       </div>

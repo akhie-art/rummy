@@ -14,7 +14,9 @@ interface HostGameBoardViewProps {
   chatMessages: ChatMessage[];
   finishGame: (updatedPlayers: RemotePlayer[]) => Promise<void>;
   triggerGlobalEndGame: (updatedPlayers: RemotePlayer[]) => Promise<void>;
+  fireTauntEvent: { sender: string; target: string } | null;
 }
+
 
 const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
   roomCode,
@@ -27,6 +29,7 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
   chatMessages,
   finishGame,
   triggerGlobalEndGame,
+  fireTauntEvent,
 }) => {
   const seatPlayers = remotePlayers.filter((p) => !p.isHost);
   const bottomPlayer = seatPlayers[0];
@@ -40,19 +43,17 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
         {playerMelds.map((meld, gIdx) => (
           <div key={gIdx} className="flex gap-0 flex-shrink-0 bg-zinc-950/30 border border-emerald-900/30 rounded px-0.5 py-0.5 backdrop-blur-[1px] shadow-inner">
             {meld.map((c, cIdx) => (
-              <div 
-                key={c.id} 
+              <div
+                key={c.id}
                 className="w-3.5 h-5 md:w-4 md:h-6 rounded bg-zinc-100 border border-zinc-300 shadow flex flex-col items-center justify-center relative -ml-1 first:ml-0"
                 style={{ zIndex: cIdx }}
               >
-                <span className={`text-[6.5px] md:text-[7.5px] leading-none font-black tracking-tighter ${
-                  c.suit === "hearts" || c.suit === "diamonds" ? "text-red-600" : "text-zinc-950"
-                }`}>
+                <span className={`text-[6.5px] md:text-[7.5px] leading-none font-black tracking-tighter ${c.suit === "hearts" || c.suit === "diamonds" ? "text-red-600" : "text-zinc-950"
+                  }`}>
                   {c.value}
                 </span>
-                <span className={`text-[4.5px] md:text-[5.5px] leading-none font-bold ${
-                  c.suit === "hearts" || c.suit === "diamonds" ? "text-red-600" : "text-zinc-950"
-                }`}>
+                <span className={`text-[4.5px] md:text-[5.5px] leading-none font-bold ${c.suit === "hearts" || c.suit === "diamonds" ? "text-red-600" : "text-zinc-950"
+                  }`}>
                   {c.suit === "hearts" ? "♥" : c.suit === "diamonds" ? "♦" : c.suit === "clubs" ? "♣" : "♠"}
                 </span>
               </div>
@@ -66,37 +67,39 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
   const renderSpeechBubble = (targetName: string | undefined, placement: "top" | "bottom" | "left" | "right") => {
     if (!targetName || !activeSpeaker || activeSpeaker.sender.toUpperCase() !== targetName.toUpperCase()) return null;
 
+    // Detect if the message is just a single emoji for a cleaner "sticker" look
+    const isSingleEmoji = activeSpeaker.text && activeSpeaker.text.length <= 2 && /\p{Emoji}/u.test(activeSpeaker.text);
+
     // Position mappings relative to player seat container bounds
     const positionClasses = {
-      top: "-top-16 left-1/2 -translate-x-1/2 animate-bounce", 
-      bottom: "-bottom-16 left-1/2 -translate-x-1/2 animate-bounce", 
-      left: "-left-[115px] top-1/2 -translate-y-1/2 animate-pulse", 
-      right: "-right-[115px] top-1/2 -translate-y-1/2 animate-pulse", 
+      top: "-top-16 left-1/2 -translate-x-1/2 animate-bounce",
+      bottom: "top-full mt-4 left-1/2 -translate-x-1/2 animate-bounce",
+      left: "-left-[120px] top-1/2 -translate-y-1/2 animate-pulse",
+      right: "left-full ml-4 top-1/2 -translate-y-1/2 animate-pulse",
     };
 
     return (
       <div className={`absolute z-[999] flex flex-col items-center pointer-events-none animate-fade-in ${positionClasses[placement]}`}>
         {placement === "bottom" && (
-          <div className="w-2.5 h-2.5 rotate-45 bg-[#0b1613]/95 border-l border-t border-emerald-500/30 -mb-1.5 relative z-10" />
+          <div className="w-2.5 h-2.5 rotate-45 bg-zinc-900 border-l border-t border-emerald-500/30 -mb-1.5 relative z-10" />
         )}
-        
-        <div className="px-2.5 py-2 bg-[#0b1613]/95 backdrop-blur-md border border-emerald-500/40 rounded-xl shadow-[0_0_30px_rgba(16,185,129,0.25)] flex flex-col gap-1 min-w-[90px] max-w-[120px]">
+
+        <div className={`px-3 py-2 bg-zinc-900/95 backdrop-blur-xl border border-emerald-500/40 rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.5)] flex flex-col items-center gap-1.5 min-w-[60px] max-w-[140px] ${isSingleEmoji ? "aspect-square justify-center p-0 w-12 h-12 rounded-full" : ""}`}>
           {activeSpeaker.text && (
-            <span className="text-[8px] font-semibold text-emerald-200 leading-tight tracking-wide text-center break-words drop-shadow">
-              "{activeSpeaker.text}"
+            <span className={`${isSingleEmoji ? "text-2xl" : "text-[10px]"} font-bold text-zinc-100 leading-tight tracking-wide text-center break-words drop-shadow-md`}>
+              {activeSpeaker.text}
             </span>
           )}
-          {activeSpeaker.photoBase64 && (
-            <div className="rounded overflow-hidden border border-emerald-600/30 shadow max-w-[100px]">
+          {activeSpeaker.photoBase64 && activeSpeaker.photoBase64.length > 100 && (
+            <div className="rounded-lg overflow-hidden border border-emerald-600/30 shadow-lg max-w-[110px]">
               <img src={activeSpeaker.photoBase64} alt="Live shared" className="w-full h-auto object-cover" />
             </div>
           )}
         </div>
 
-        {placement !== "bottom" && (
-          <div className={`w-2.5 h-2.5 rotate-45 bg-[#0b1613]/95 border-r border-b border-emerald-500/30 -mt-1.5 relative z-10 ${
-            placement === "left" ? "ml-auto mr-4" : placement === "right" ? "mr-auto ml-4" : ""
-          }`} />
+        {(placement === "top" || placement === "left" || placement === "right") && (
+          <div className={`w-2.5 h-2.5 rotate-45 bg-zinc-900 border-r border-b border-emerald-500/30 -mt-1.5 relative z-10 ${placement === "left" ? "ml-auto mr-4" : placement === "right" ? "mr-auto ml-4" : ""
+            }`} />
         )}
       </div>
     );
@@ -122,6 +125,7 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
 
   // --- MATCH START INTRO BANNER ENGINE ---
   const [showIntroModal, setShowIntroModal] = useState<boolean>(true);
+  const [showFinishConfirm, setShowFinishConfirm] = useState<boolean>(false);
 
   // --- PLAYER ABANDONMENT ENGINE ---
   const [abandonedPlayerName, setAbandonedPlayerName] = useState<string | null>(null);
@@ -135,21 +139,21 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
   useEffect(() => {
     if (!chatMessages || chatMessages.length === 0) return;
     const lastMsg = chatMessages[chatMessages.length - 1];
-    
+
     // Filter Kerahasiaan: Layar Host/Spectator HANYA menampilkan chat publik (Semua)
     if (lastMsg.recipient && lastMsg.recipient !== "All") return;
-    
+
     if (lastMsg.timestamp > lastProcessedMsgTime.current) {
       lastProcessedMsgTime.current = lastMsg.timestamp;
-      
+
       if (speakerTimeoutRef.current) clearTimeout(speakerTimeoutRef.current);
-      
+
       setActiveSpeaker({
         sender: lastMsg.sender,
         text: lastMsg.text,
         photoBase64: lastMsg.photoBase64
       });
-      
+
       speakerTimeoutRef.current = setTimeout(() => {
         setActiveSpeaker(null);
       }, 4000); // Hover for 4 seconds of pure amusement!
@@ -163,7 +167,7 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
       const roundPoints = player.hand.reduce((sum, card) => sum + getCardPoints(card), 0);
       const prevScore = player.score || 0;
       const totalScore = prevScore + roundPoints;
-      
+
       return {
         name: player.name,
         roundPoints,
@@ -209,11 +213,11 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
     // 0. HYDRATE BASELINE ON FIRST RENDER (No false initial flashes!)
     if (isFirstRender.current) {
       isFirstRender.current = false;
-      
+
       lastSeenDeckSize.current = deck.length;
       lastSeenDiscardPileCount.current = discardPile.length;
       lastSeenDiscardId.current = discardPile[0]?.id || null;
-      
+
       const initHands: { [name: string]: number } = {};
       const initMelds: { [name: string]: number } = {};
       remotePlayers.forEach((p) => {
@@ -271,7 +275,7 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
 
         // 2. Munculkan Modal Penyiaran Pusat (Broadcast Banner)
         triggerBroadcast({
-          title: "🗑️ KARTU DIBUANG",
+          title: "KARTU DIBUANG",
           subtitle: `${discardPlayerName.toUpperCase()} membuang kartu ke meja!`,
           type: "discard",
           card: c
@@ -284,7 +288,7 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
     const departedPlayer = lastSeenPlayerNamesRef.current.find(
       (name) => !currentPlayerNames.includes(name)
     );
-    
+
     if (departedPlayer) {
       console.log("🚨 [ABANDONMENT DETECTED]:", departedPlayer);
       setAbandonedPlayerName(departedPlayer);
@@ -294,7 +298,7 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
     lastSeenDeckSize.current = deck.length;
     lastSeenDiscardPileCount.current = discardPile.length;
     lastSeenDiscardId.current = discardPile[0]?.id || null;
-    
+
     const nextHands: { [name: string]: number } = {};
     const nextMelds: { [name: string]: number } = {};
     remotePlayers.forEach((p) => {
@@ -313,7 +317,8 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
         The target slot for the top discard sits exactly at Y: -135px relative to table center!
         Now final transform lands exactly on the discard pile ring instead of the central deck!
       */}
-      <style dangerouslySetInnerHTML={{ __html: `
+      <style dangerouslySetInnerHTML={{
+        __html: `
         @keyframes throw-from-bottom {
           0% { transform: translateY(280px) scale(0.4) rotate(0deg); opacity: 0; filter: blur(2px); }
           15% { opacity: 1; filter: blur(0); }
@@ -364,7 +369,7 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
         </h3>
         <div className="flex items-center gap-3">
           <button
-            onClick={triggerFinishGameDialog}
+            onClick={() => setShowFinishConfirm(true)}
             className="text-[9px] font-bold font-mono bg-emerald-950 border border-emerald-800/60 text-emerald-400 hover:bg-emerald-900/30 px-2.5 py-1 rounded tracking-widest uppercase transition-all cursor-pointer shadow-[0_0_15px_rgba(16,185,129,0.15)] active:scale-95"
           >
             Selesaikan
@@ -383,71 +388,161 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
 
       {/* Table layout */}
       <div className="flex-1 flex relative items-center justify-center">
+        {/* DYNAMIC SEAT-TO-SEAT FIRE TAUNT ANIMATION (HOST ONLY) */}
+        {fireTauntEvent && (() => {
+          const sName = fireTauntEvent.sender.trim().toUpperCase();
+          const tName = fireTauntEvent.target.trim().toUpperCase();
+          
+          console.log(`🔥 [HOST ANIM] Taunt from ${sName} to ${tName}`);
+          
+          const senderIdx = seatPlayers.findIndex(p => p.name.trim().toUpperCase() === sName);
+          const targetIdx = seatPlayers.findIndex(p => p.name.trim().toUpperCase() === tName);
+
+          if (senderIdx === -1 || targetIdx === -1) {
+            console.warn(`⚠️ [HOST ANIM] Could not find seats for: S:${senderIdx} T:${targetIdx}`);
+            return null;
+          }
+
+          // Mapping indices to normalized layout positions
+          // 0: Bottom, 1: Top, 2: Left, 3: Right
+          const getPos = (idx: number) => {
+            if (idx === 0) return { x: '50%', y: '85%' };
+            if (idx === 1) return { x: '50%', y: '15%' };
+            if (idx === 2) return { x: '15%', y: '50%' };
+            if (idx === 3) return { x: '85%', y: '50%' };
+            return { x: '50%', y: '50%' };
+          };
+
+          const start = getPos(senderIdx);
+          const end = getPos(targetIdx);
+
+          return (
+            <div key={`${sName}-${tName}-${Math.random()}`} className="absolute inset-0 z-[100] pointer-events-none overflow-hidden">
+              <style dangerouslySetInnerHTML={{ __html: `
+                @keyframes fireball-travel {
+                  0% { left: ${start.x}; top: ${start.y}; transform: translate(-50%, -50%) scale(0.5); opacity: 0; }
+                  15% { opacity: 1; }
+                  85% { opacity: 1; }
+                  100% { left: ${end.x}; top: ${end.y}; transform: translate(-50%, -50%) scale(1.5); opacity: 0; }
+                }
+                @keyframes host-impact-shake {
+                  0%, 100% { transform: translate(0,0); }
+                  20% { transform: translate(-6px, -3px); }
+                  40% { transform: translate(6px, 3px); }
+                  60% { transform: translate(-4px, 2px); }
+                  80% { transform: translate(4px, -2px); }
+                }
+                @keyframes host-taunt-pop {
+                  0%   { opacity:0; transform:translate(-50%,-50%) scale(0.2); }
+                  60%  { opacity:1; transform:translate(-50%,-50%) scale(1.1); }
+                  100% { opacity:1; transform:translate(-50%,-50%) scale(1); }
+                }
+                .host-fireball {
+                  position: absolute;
+                  filter: drop-shadow(0 0 20px #f97316);
+                  animation: fireball-travel 0.8s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+                  z-index: 999;
+                }
+                .host-shake {
+                  animation: host-impact-shake 0.5s ease 0.8s;
+                  width: 100%; height: 100%; position: absolute; inset: 0;
+                }
+                .host-taunt-banner {
+                  position: absolute;
+                  left: ${end.x}; top: ${end.y};
+                  animation: host-taunt-pop 0.35s cubic-bezier(0.34,1.56,0.64,1) 0.8s both;
+                  z-index: 1000;
+                }
+              `}} />
+              
+              {/* Subtle Red Vignette during flight */}
+              <div className="absolute inset-0 bg-gradient-to-br from-red-950/20 via-transparent to-red-950/20" />
+
+              {/* Fireballs */}
+              {[0, 0.1, 0.2].map((delay, i) => (
+                <div key={i} className="host-fireball" style={{ animationDelay: `${delay}s` }}>
+                  <svg width="60" height="60" viewBox="0 0 24 24" fill="none">
+                    <defs>
+                      <radialGradient id={`host-fire-grad-${i}`} cx="50%" cy="50%" r="50%">
+                        <stop offset="0%" stopColor="#fff" />
+                        <stop offset="30%" stopColor="#fbbf24" />
+                        <stop offset="60%" stopColor="#f97316" />
+                        <stop offset="100%" stopColor="transparent" />
+                      </radialGradient>
+                    </defs>
+                    <path
+                      d="M12 2c0 1.1-.9 2-2 2s-2-.9-2-2c0-1.1.9-2 2-2s2 .9 2 2zm1 14c0 3.3-2.7 6-6 6s-6-2.7-6-6c0-1.7.7-3.2 1.8-4.2C3.1 10.7 4 8.7 4 6.5 4 4 5 2 7 1c-.7 1.3-1 2.8-1 4.5 0 3.9 3.1 7 7 7 .6 0 1.1-.1 1.6-.2-.4 1.1-.6 2.3-.6 3.7z"
+                      fill={`url(#host-fire-grad-${i})`}
+                    />
+                  </svg>
+                </div>
+              ))}
+
+              {/* Screen Shake & Impact Banner at Destination */}
+              <div className="host-shake">
+                <div className="host-taunt-banner bg-zinc-950/95 border border-red-700/60 backdrop-blur-md px-5 py-3 rounded-xl flex flex-col items-center gap-1 shadow-[0_0_40px_rgba(239,68,68,0.35)] select-none">
+                  <span className="text-xl animate-bounce">🔥</span>
+                  <span className="text-[8px] font-mono font-black text-red-500 uppercase tracking-[0.3em]">BAKAR LAYAR!</span>
+                  <span className="text-[10px] font-semibold text-zinc-200 uppercase tracking-wider">
+                    {fireTauntEvent.sender} → {fireTauntEvent.target}
+                  </span>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Derived seat tracking list */}
         <>
           {/* Player 2 (Top) */}
-          <div className="absolute top-2 left-1/2 -translate-x-1/2 text-center z-20">
-            {renderSpeechBubble(seatPlayers[1]?.name, "bottom")}
-            <div
-              className={`text-[10px] font-mono uppercase tracking-wider ${
-                seatPlayers[1]
-                  ? "text-zinc-300"
-                  : "text-zinc-600 italic opacity-50"
-              }`}
-            >
-              {seatPlayers[1] ? seatPlayers[1].name : "(Kursi Kosong)"}
-            </div>
-            {seatPlayers[1] && (
-              <div className="flex gap-0.5 mt-1 justify-center opacity-40 scale-75">
-                {[...Array(seatPlayers[1].hand.length)].map((_, i) => (
-                  <div
-                    key={i}
-                    className="w-3 h-5 rounded-sm bg-zinc-700 border border-zinc-800 shadow-sm"
-                  />
-                ))}
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20">
+            {renderSpeechBubble(seatPlayers[1]?.name, "right")}
+            <div className="border border-zinc-800 bg-zinc-900/30 px-4 py-1.5 rounded-xl flex flex-col items-center animate-fade-in">
+              <div className="text-[9px] text-zinc-400 font-mono tracking-[0.2em] uppercase font-normal flex items-center gap-1">
+                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${seatPlayers[1]?.name === remotePlayers[turnIndex]?.name ? "bg-emerald-500 animate-pulse" : "bg-zinc-700"}`} />
+                {seatPlayers[1] ? seatPlayers[1].name : "(Kursi Kosong)"}
               </div>
-            )}
-            {seatPlayers[1] && renderPlayerMelds(seatPlayers[1], "horizontal")}
+              {seatPlayers[1] && (
+                <div className="text-xs bg-zinc-900 border border-zinc-800 text-zinc-500 rounded-full w-6 h-6 flex items-center justify-center font-mono mt-1 mx-auto">
+                  {seatPlayers[1].hand.length}
+                </div>
+              )}
+              {seatPlayers[1] && renderPlayerMelds(seatPlayers[1], "horizontal")}
+            </div>
           </div>
 
           {/* Player 3 (Left) */}
-          <div className="absolute left-2 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1 z-20">
-            {renderSpeechBubble(seatPlayers[2]?.name, "right")}
-            <div
-              className={`text-[10px] font-mono -rotate-90 mb-2 uppercase tracking-wider ${
-                seatPlayers[2]
-                  ? "text-zinc-300"
-                  : "text-zinc-700 italic opacity-50"
-              }`}
-            >
-              {seatPlayers[2] ? seatPlayers[2].name : "(Kosong)"}
-            </div>
-            {seatPlayers[2] && (
-              <div className="text-xs bg-zinc-900 border border-zinc-800 text-zinc-500 rounded-full w-6 h-6 flex items-center justify-center font-mono">
-                {seatPlayers[2].hand.length}
+          <div className="absolute left-2 top-1/2 -translate-y-1/2 z-20">
+            {renderSpeechBubble(seatPlayers[2]?.name, "bottom")}
+            <div className="border border-zinc-800 bg-zinc-900/30 px-4 py-1.5 rounded-xl flex flex-col items-center animate-fade-in">
+              <div className="text-[9px] text-zinc-400 font-mono tracking-[0.2em] uppercase font-normal flex items-center gap-1">
+                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${seatPlayers[2]?.name === remotePlayers[turnIndex]?.name ? "bg-emerald-500 animate-pulse" : "bg-zinc-700"}`} />
+                {seatPlayers[2] ? seatPlayers[2].name : "(Kursi Kosong)"}
               </div>
-            )}
-            {seatPlayers[2] && renderPlayerMelds(seatPlayers[2], "vertical")}
+              {seatPlayers[2] && (
+                <div className="text-xs bg-zinc-900 border border-zinc-800 text-zinc-500 rounded-full w-6 h-6 flex items-center justify-center font-mono mt-1 mx-auto">
+                  {seatPlayers[2].hand.length}
+                </div>
+              )}
+              {seatPlayers[2] && renderPlayerMelds(seatPlayers[2], "vertical")}
+            </div>
           </div>
 
           {/* Player 4 (Right) */}
-          <div className="absolute right-2 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1 z-20">
-            {renderSpeechBubble(seatPlayers[3]?.name, "left")}
-            <div
-              className={`text-[10px] font-mono rotate-90 mb-2 uppercase tracking-wider ${
-                seatPlayers[3]
-                  ? "text-zinc-300"
-                  : "text-zinc-700 italic opacity-50"
-              }`}
-            >
-              {seatPlayers[3] ? seatPlayers[3].name : "(Kosong)"}
-            </div>
-            {seatPlayers[3] && (
-              <div className="text-xs bg-zinc-900 border border-zinc-800 text-zinc-500 rounded-full w-6 h-6 flex items-center justify-center font-mono">
-                {seatPlayers[3].hand.length}
+          <div className="absolute right-2 top-1/2 -translate-y-1/2 z-20">
+            {renderSpeechBubble(seatPlayers[3]?.name, "top")}
+            <div className="border border-zinc-800 bg-zinc-900/30 px-4 py-1.5 rounded-xl flex flex-col items-center animate-fade-in">
+              <div className="text-[9px] text-zinc-400 font-mono tracking-[0.2em] uppercase font-normal flex items-center gap-1">
+                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${seatPlayers[3]?.name === remotePlayers[turnIndex]?.name ? "bg-emerald-500 animate-pulse" : "bg-zinc-700"}`} />
+                {seatPlayers[3] ? seatPlayers[3].name : "(Kursi Kosong)"}
               </div>
-            )}
-            {seatPlayers[3] && renderPlayerMelds(seatPlayers[3], "vertical")}
+              {seatPlayers[3] && (
+                <div className="text-xs bg-zinc-900 border border-zinc-800 text-zinc-500 rounded-full w-6 h-6 flex items-center justify-center font-mono mt-1 mx-auto">
+                  {seatPlayers[3].hand.length}
+                </div>
+              )}
+              {seatPlayers[3] && renderPlayerMelds(seatPlayers[3], "vertical")}
+            </div>
           </div>
         </>
 
@@ -470,7 +565,7 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
                 faceUp={false}
                 className="w-full h-full relative z-10 border-zinc-800 pointer-events-none bg-zinc-900 shadow-inner"
               />
-              
+
               {/* Glowing Emerald Count Badge */}
               <div className="absolute -bottom-2 -right-2 z-20 bg-zinc-950 text-emerald-400 px-2 py-0.5 rounded border border-emerald-900/50 shadow-[0_0_15px_rgba(16,185,129,0.15)] font-mono font-bold text-[9px] tracking-wide leading-none flex items-center justify-center min-w-[24px]">
                 {deck.length}
@@ -503,31 +598,28 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
                 <PlayingCard
                   suit={card.suit}
                   value={card.value}
-                  className={`border ${
-                    index === 0
+                  className={`border ${index === 0
                       ? "border-zinc-400 shadow-lg"
                       : "border-zinc-700/50"
-                  }`}
+                    }`}
                 />
 
                 {/* Chronological Sequence Number Badge (Top-Left) */}
                 <div
-                  className={`absolute -top-2 -left-2 w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-black font-mono border shadow-sm z-30 transition-all ${
-                    index === 0
+                  className={`absolute -top-2 -left-2 w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-black font-mono border shadow-sm z-30 transition-all ${index === 0
                       ? "bg-emerald-950 text-emerald-400 border-emerald-700/80 shadow-[0_0_8px_rgba(16,185,129,0.4)]"
                       : "bg-zinc-900/90 text-zinc-400 border-zinc-700"
-                  }`}
+                    }`}
                 >
-                  {((discardPile.length - index - 1) % 7) + 1}
+                  #{discardPile.length - index}
                 </div>
 
                 {/* Sleek Glass Attribution Nameplate (Bottom Floating) */}
-                <div 
-                  className={`absolute -bottom-3.5 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded backdrop-blur-md border font-mono text-[8px] uppercase tracking-[0.1em] font-bold z-30 whitespace-nowrap max-w-[68px] truncate shadow-md transition-all duration-300 ${
-                    index === 0
+                <div
+                  className={`absolute -bottom-3.5 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded backdrop-blur-md border font-mono text-[8px] uppercase tracking-[0.1em] font-bold z-30 whitespace-nowrap max-w-[68px] truncate shadow-md transition-all duration-300 ${index === 0
                       ? "bg-emerald-950/80 text-emerald-300 border-emerald-700/60 shadow-[0_0_10px_rgba(16,185,129,0.25)]"
                       : "bg-zinc-950/80 text-zinc-400 border-zinc-800/80 shadow-sm"
-                  }`}
+                    }`}
                   title={card.thrownBy}
                 >
                   {card.thrownBy || "Dealer"}
@@ -558,23 +650,17 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
 
         {/* Player 1 (Bottom Seat) */}
         <div className="absolute bottom-2 left-1/2 -translate-x-1/2 border border-zinc-800 bg-zinc-900/30 px-5 py-2 rounded-xl flex flex-col items-center z-20 animate-fade-in">
-          {renderSpeechBubble(bottomPlayer?.name, "top")}
+          {renderSpeechBubble(bottomPlayer?.name, "left")}
           <div className="text-[9px] text-zinc-400 font-mono tracking-[0.2em] uppercase font-normal flex items-center gap-1">
             <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                bottomPlayer ? "bg-emerald-600 animate-pulse" : "bg-zinc-800"
-              }`}
+              className={`w-1.5 h-1.5 rounded-full ${bottomPlayer?.name === remotePlayers[turnIndex]?.name ? "bg-emerald-500 animate-pulse" : "bg-zinc-700"
+                }`}
             />
             {bottomPlayer ? bottomPlayer.name : "(Kursi Kosong)"}
           </div>
           {bottomPlayer && (
-            <div className="flex gap-0.5 mt-1 justify-center scale-75 opacity-70">
-              {[...Array(bottomPlayer.hand.length)].map((_, i) => (
-                <div
-                  key={i}
-                  className="w-4 h-6 rounded-sm bg-zinc-700 border border-zinc-800 shadow-sm"
-                />
-              ))}
+            <div className="text-xs bg-zinc-900 border border-zinc-800 text-zinc-500 rounded-full w-6 h-6 flex items-center justify-center font-mono mt-1">
+              {bottomPlayer.hand.length}
             </div>
           )}
           {bottomPlayer && renderPlayerMelds(bottomPlayer, "horizontal")}
@@ -582,50 +668,65 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
       </div>
 
       {/* CENTRAL HIGH-FIDELITY BROADCAST BANNER (ACTION ANNOUNCEMENT MODAL) */}
+      {/* BROADCAST TOAST — Top Center, slim & unobtrusive */}
       {broadcast && (
-        <div className="absolute inset-0 z-[9999] flex items-center justify-center bg-black/35 backdrop-blur-[2px] transition-all duration-300 pointer-events-none animate-fade-in">
-          <div className={`px-9 py-7 rounded-2xl border ${
-            broadcast.type === "meld" 
-              ? "bg-amber-950/50 border-amber-500/60 shadow-[0_0_50px_rgba(245,158,11,0.25)]"
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[9999] pointer-events-none animate-fade-in">
+          <div className={`flex items-center gap-2.5 px-4 py-2.5 rounded-2xl border backdrop-blur-md shadow-lg select-none ${broadcast.type === "meld"
+              ? "bg-amber-950/80 border-amber-700/60 shadow-amber-950/50"
               : broadcast.type === "draw"
-              ? "bg-emerald-950/50 border-emerald-500/60 shadow-[0_0_50px_rgba(16,185,129,0.25)]"
-              : "bg-rose-950/50 border-rose-500/60 shadow-[0_0_50px_rgba(244,63,94,0.25)]"
-          } flex flex-col items-center gap-3.5 animate-scale-up select-none min-w-[340px] text-center backdrop-blur-md`}>
-            
-            {/* Dynamic Icon Badge with Bouncy Micro-Animation */}
-            <div className={`w-16 h-16 rounded-full border flex items-center justify-center text-3xl shadow-xl animate-bounce ${
-              broadcast.type === "meld"
-                ? "bg-amber-950 border-amber-500 text-amber-400 shadow-amber-500/20"
-                : broadcast.type === "draw"
-                ? "bg-emerald-950 border-emerald-500 text-emerald-400 shadow-emerald-500/20"
-                : "bg-rose-950 border-rose-500 text-rose-400 shadow-rose-500/20"
+                ? "bg-emerald-950/80 border-emerald-800/60 shadow-emerald-950/50"
+                : "bg-rose-950/80 border-rose-800/60 shadow-rose-950/50"
             }`}>
-              {broadcast.type === "meld" ? "🏆" : broadcast.type === "draw" ? "🃏" : "🗑️"}
-            </div>
-
-            {/* Floating Notification Typography */}
-            <div>
-              <h2 className={`text-[11px] font-black font-mono uppercase tracking-[0.35em] mb-1.5 ${
-                broadcast.type === "meld"
-                  ? "text-amber-400"
-                  : broadcast.type === "draw"
-                  ? "text-emerald-400"
-                  : "text-rose-400"
+            {/* SVG Icon */}
+            <span className={`flex-shrink-0 ${broadcast.type === "meld" ? "text-amber-400" : broadcast.type === "draw" ? "text-emerald-400" : "text-rose-400"
               }`}>
+              {broadcast.type === "meld" && (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" />
+                  <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18" />
+                  <path d="M4 22h16" />
+                  <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22" />
+                  <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" />
+                  <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" />
+                </svg>
+              )}
+              {broadcast.type === "draw" && (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="6" width="20" height="14" rx="2" />
+                  <path d="M16 2H8l-2 4h12l-2-4Z" />
+                  <path d="M12 10v6" />
+                  <path d="m9 13 3 3 3-3" />
+                </svg>
+              )}
+              {broadcast.type === "discard" && (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 6h18" />
+                  <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                  <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                  <line x1="10" y1="11" x2="10" y2="17" />
+                  <line x1="14" y1="11" x2="14" y2="17" />
+                </svg>
+              )}
+            </span>
+
+            {/* Text */}
+            <div className="flex flex-col min-w-0">
+              <span className={`text-[8px] font-black font-mono uppercase tracking-[0.3em] leading-none mb-0.5 ${broadcast.type === "meld" ? "text-amber-400" : broadcast.type === "draw" ? "text-emerald-400" : "text-rose-400"
+                }`}>
                 {broadcast.title}
-              </h2>
-              <p className="text-[14px] font-semibold text-zinc-100 px-2 max-w-xs leading-relaxed text-balance tracking-wide drop-shadow-sm">
+              </span>
+              <span className="text-[10px] font-medium text-zinc-200 leading-snug truncate max-w-[200px]">
                 {broadcast.subtitle}
-              </p>
+              </span>
             </div>
 
-            {/* Dynamic Card Preview: Injected for Discards! */}
+            {/* Card Preview (discard only) */}
             {broadcast.card && (
-              <div className="mt-2.5 transform scale-85 hover:scale-90 transition-transform border border-zinc-700/50 rounded-lg shadow-2xl overflow-hidden flex items-center justify-center bg-[#0b0f0d] p-1 animate-pulse">
-                <PlayingCard 
-                  suit={broadcast.card.suit} 
-                  value={broadcast.card.value} 
-                  className="border-zinc-800 shadow-md"
+              <div className="flex-shrink-0 w-7 h-10 rounded-md overflow-hidden border border-zinc-600/50 shadow-md bg-white flex items-center justify-center ml-1">
+                <PlayingCard
+                  suit={broadcast.card.suit}
+                  value={broadcast.card.value}
+                  className="scale-[0.55] origin-center"
                 />
               </div>
             )}
@@ -634,30 +735,64 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
       )}
 
 
+      {/* LEGACY FIREBALL ANIMATION BLOCK REMOVED TO PREVENT CONFLICTS WITH THE NEW SVG ANIMATION */}
+
+      {/* FINISH GAME CONFIRMATION MODAL */}
+      {showFinishConfirm && (
+        <div className="fixed inset-0 z-[999999] flex items-center justify-center p-6 bg-black/70 backdrop-blur-md animate-fade-in">
+          <div className="w-full max-w-xs bg-zinc-950 border border-zinc-800 rounded-3xl p-7 shadow-2xl text-center animate-scale-up">
+            <div className="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto mb-4">
+              <span className="text-2xl">⚠️</span>
+            </div>
+            <h3 className="text-xs font-mono font-black text-zinc-400 uppercase tracking-widest mb-2">Konfirmasi</h3>
+            <p className="text-[11px] text-zinc-300 leading-relaxed mb-6 font-medium">
+              Selesaikan babak ini dan hitung poin semua pemain?
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowFinishConfirm(false)}
+                className="flex-1 py-3 rounded-xl border border-zinc-800 text-zinc-500 text-[10px] font-bold uppercase tracking-wider cursor-pointer hover:bg-zinc-900 transition-all"
+              >
+                Batal
+              </button>
+              <button
+                onClick={async () => {
+                  setShowFinishConfirm(false);
+                  await triggerFinishGameDialog();
+                }}
+                className="flex-1 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black text-[10px] font-bold uppercase tracking-wider cursor-pointer transition-all shadow-[0_0_20px_rgba(16,185,129,0.3)]"
+              >
+                Ya, Selesaikan
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* IMMERSIVE PLAYER ABANDONMENT WARNING POPUP */}
       {abandonedPlayerName && (
         <div className="fixed inset-0 z-[999999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
           <div className="w-full max-w-xs bg-[#100303]/95 border border-red-950 rounded-2xl shadow-[0_25px_70px_rgba(220,38,38,0.15)] p-5 text-center relative overflow-hidden animate-scale-up">
             {/* Red glow in background */}
             <div className="absolute -top-16 -left-16 w-40 h-40 bg-red-600/10 rounded-full blur-3xl pointer-events-none" />
-            
+
             {/* Warning Icon */}
             <div className="w-12 h-12 rounded-full bg-red-950 border border-red-800/40 flex items-center justify-center shadow-[0_0_20px_rgba(239,68,68,0.15)] mb-3 mx-auto animate-pulse">
               <span className="text-xl">🚨</span>
             </div>
-            
+
             <span className="text-[7px] font-mono font-black text-red-500 uppercase tracking-[0.35em] block leading-none mb-2">
               Peringatan Meja
             </span>
-            
+
             <h3 className="text-xs font-bold text-zinc-100 uppercase tracking-widest mb-2">
               PEMAIN TELAH KELUAR
             </h3>
-            
+
             <p className="text-[9px] font-mono text-zinc-400 leading-relaxed uppercase tracking-wide mb-5 px-2">
               Pemain <b className="text-red-400 font-bold">"{abandonedPlayerName}"</b> telah menyerah dan meninggalkan ruangan.
             </p>
-            
+
             <button
               onClick={() => setAbandonedPlayerName(null)}
               className="w-full bg-red-950 hover:bg-red-900/40 border border-red-800/60 text-red-400 py-2 rounded-xl text-[9px] font-black font-mono tracking-widest uppercase transition-all active:scale-95 shadow-[0_0_15px_rgba(239,68,68,0.1)] cursor-pointer"

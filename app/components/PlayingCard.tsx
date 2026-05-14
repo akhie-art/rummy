@@ -54,7 +54,10 @@ export default function PlayingCard({
   if (!faceUp) {
     return (
       <div
-        onClick={onClick}
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick?.();
+        }}
         className={`rounded-xl relative overflow-hidden flex items-center justify-center cursor-pointer border-2 border-white shadow-xl transition-all active:scale-95 select-none ${className}`}
         style={{
           ...cardStyle,
@@ -72,7 +75,10 @@ export default function PlayingCard({
 
   return (
     <div
-      onClick={onClick}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick?.();
+      }}
       style={cardStyle}
       className={`poker-card bg-white rounded-xl shadow-lg border-2 cursor-pointer select-none flex flex-col justify-between p-1.5 relative transition-all active:scale-95 ${
         isSelected

@@ -262,12 +262,12 @@ export const hasAnyExistingRun = (cards: Card[]): boolean => {
 // with cards that are already present in the player's hand.
 // Uses O(N^2) hand pair analysis to seamlessly support Jokers, boundaries, 
 // and enforces the strict No-Middle-Catch condition.
-export const canDrawDiscardCard = (targetCard: Card, hand: Card[]): boolean => {
-  return getAutomaticDiscardMeldCards(targetCard, hand) !== null;
+export const canDrawDiscardCard = (targetCard: Card, hand: Card[], existingMelds: Card[][] = []): boolean => {
+  return getAutomaticDiscardMeldCards(targetCard, hand, existingMelds) !== null;
 };
 
 // Helper to find which cards in hand actually form the meld with a drawn discard
-export const getAutomaticDiscardMeldCards = (targetCard: Card, hand: Card[]): Card[] | null => {
+export const getAutomaticDiscardMeldCards = (targetCard: Card, hand: Card[], existingMelds: Card[][] = []): Card[] | null => {
   if (hand.length < 2) return null;
 
   // We sort the hand first to make the selection predictable (preferring neighbors)
@@ -278,10 +278,21 @@ export const getAutomaticDiscardMeldCards = (targetCard: Card, hand: Card[]): Ca
       const c1 = sortedHand[i];
       const c2 = sortedHand[j];
       
-      // 1. CHECK SET (MUST HAVE EXISTING RUN)
+      // Rule: Cannot use ANY JOKER from hand to help draw from discard.
+      // The supporting pair in the hand MUST consist of two normal cards!
+      if (c1.suit === "joker" || c2.suit === "joker") continue;
+      
+      // Rule: Taking from the discard pile to form a Set (Group) is allowed 
+      // ONLY if the player already has a Sequence (Run) in their Safe Zone (melds)
+      // or an existing Run in their remaining hand.
+      
+      // 1. CHECK SET (Allowed only if a Run is already established)
       if (isSet([c1, c2, targetCard])) {
+        const hasRunInMelds = existingMelds.some(group => isRun(group));
         const remainingHand = sortedHand.filter(c => c.id !== c1.id && c.id !== c2.id);
-        if (hasAnyExistingRun(remainingHand)) {
+        const hasRunInHand = hasAnyExistingRun(remainingHand);
+        
+        if (hasRunInMelds || hasRunInHand) {
           return [c1, c2];
         }
       }

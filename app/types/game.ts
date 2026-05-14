@@ -7,6 +7,7 @@ export interface RemotePlayer {
   isHost: boolean;
   hasDrawn: boolean;
   score: number;
+  isDoneShowdown?: boolean;
 }
 
 export interface ChatMessage {
@@ -19,7 +20,7 @@ export interface ChatMessage {
 }
 
 export interface RemoteGameState {
-  status: "waiting" | "playing" | "finished";
+  status: "waiting" | "playing" | "showdown" | "finished";
   deck: Card[];
   discard_pile: Card[];
   players: RemotePlayer[];
