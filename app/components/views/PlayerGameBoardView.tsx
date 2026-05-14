@@ -613,7 +613,7 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
               items={playerHand.map((c) => c.id)}
               strategy={rectSortingStrategy}
             >
-              <div className="flex flex-wrap justify-center gap-x-[-12px] md:gap-x-[-16px] gap-y-2 px-6">
+              <div className="flex flex-wrap justify-center gap-x-[-8px] md:gap-x-[-10px] gap-y-2 px-6">
                 {playerHand.map((card) => (
                   <SortableCardWrapper
                     key={card.id}
