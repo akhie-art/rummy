@@ -327,7 +327,7 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
           </div>
 
           {/* Emoji Taunt Bar */}
-          <div className="flex items-center gap-4 overflow-x-auto no-scrollbar border-t border-zinc-900/30 pt-2">
+          <div className="flex items-center gap-4 overflow-x-auto no-scrollbar border-t border-white/5 pt-2">
             <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-[0.2em] flex-shrink-0">
               Kirim Emoji
             </span>
@@ -336,7 +336,7 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
                 <button
                   key={idx}
                   onClick={() => sendChatMessage(emoji, undefined, "All")}
-                  className="w-8 h-8 rounded-lg bg-zinc-900/50 border border-zinc-800/40 flex items-center justify-center text-lg hover:scale-110 active:scale-95 transition-all cursor-pointer hover:bg-zinc-800/60"
+                  className="w-9 h-9 rounded-xl bg-white/5 backdrop-blur-md border border-white/10 flex items-center justify-center text-xl hover:scale-110 active:scale-95 transition-all cursor-pointer hover:bg-white/10 hover:border-white/20 shadow-lg"
                 >
                   {emoji}
                 </button>
@@ -550,20 +550,20 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
                   setSelectedCardIds([]);
                 }
               }}
-              className="w-14 h-14 rounded-2xl border bg-emerald-500 text-black border-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.3)] animate-bounce-in flex flex-col items-center justify-center cursor-pointer active:scale-95 transition-all"
+              className="w-16 h-16 rounded-2xl border border-emerald-400/40 bg-emerald-500/20 backdrop-blur-xl text-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.2)] animate-bounce-in flex flex-col items-center justify-center cursor-pointer active:scale-95 transition-all hover:bg-emerald-500/30 hover:border-emerald-400/60"
               title="Turunkan Kartu"
             >
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 5v14M19 12l-7 7-7-7" />
               </svg>
-              <span className="text-[6px] font-black font-mono tracking-tighter -mt-1">TURUN</span>
+              <span className="text-[7px] font-black font-mono tracking-tighter -mt-1">TURUN</span>
             </button>
           )}
 
           {isShowdown && !isDoneShowdown && (
             <button
               onClick={finishShowdown}
-              className="px-6 py-3 bg-emerald-500 hover:bg-emerald-400 text-black rounded-2xl text-[10px] font-black font-mono tracking-widest uppercase transition-all active:scale-95 shadow-[0_0_20px_rgba(16,185,129,0.3)] flex items-center gap-2 cursor-pointer"
+              className="px-8 py-4 bg-emerald-500/20 backdrop-blur-xl border border-emerald-500/30 text-emerald-400 rounded-2xl text-[11px] font-black font-mono tracking-widest uppercase transition-all active:scale-95 shadow-[0_0_20px_rgba(16,185,129,0.15)] flex items-center gap-2.5 cursor-pointer hover:bg-emerald-500/30 hover:border-emerald-500/50"
             >
               <span>Selesai</span>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
@@ -588,7 +588,7 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
                   setSelectedCardIds([]);
                   await discardSelected(cardId);
                 }}
-                className="w-14 h-14 rounded-2xl border border-amber-400/40 bg-amber-950/60 backdrop-blur-md text-amber-400 shadow-[0_0_30px_rgba(245,158,11,0.3)] animate-bounce-in scale-110 z-50 flex flex-col items-center justify-center cursor-pointer hover:bg-amber-900/80 hover:border-amber-400/80 active:scale-95 transition-all"
+                className="w-16 h-16 rounded-2xl border border-amber-400/40 bg-amber-950/40 backdrop-blur-xl text-amber-400 shadow-[0_0_40px_rgba(245,158,11,0.25)] animate-bounce-in scale-110 z-50 flex flex-col items-center justify-center cursor-pointer hover:bg-amber-900/60 hover:border-amber-400/60 active:scale-95 transition-all"
                 title="Tutup Kartu!"
               >
                 <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" className="mb-1 drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)]">
@@ -655,9 +655,9 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
                       e.stopPropagation();
                       setViewingOpponent(opp);
                     }}
-                    className="flex items-center gap-2 bg-zinc-900/60 hover:bg-zinc-800/80 p-2 rounded-xl border border-zinc-800/60 transition-all active:scale-95 cursor-pointer group"
+                    className="flex items-center gap-3 bg-white/5 backdrop-blur-md hover:bg-white/10 p-2.5 rounded-2xl border border-white/10 transition-all active:scale-95 cursor-pointer group shadow-lg"
                   >
-                    <div className="flex flex-col items-start min-w-[60px]">
+                    <div className="flex flex-col items-start min-w-[70px]">
                       <span className="text-[7px] font-mono font-black text-zinc-500 uppercase tracking-widest leading-none mb-0.5 group-hover:text-rose-400 transition-colors">LIHAT</span>
                       <span className="text-[10px] font-bold text-zinc-200 truncate max-w-[70px]">{opp.name}</span>
                     </div>
@@ -680,9 +680,9 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
                 Zona Aman (Milik Anda)
               </span>
             </div>
-            <div className="flex flex-wrap gap-4 min-h-[60px] p-3 rounded-2xl border border-zinc-900/50 bg-black/20">
+            <div className="flex flex-wrap gap-4 min-h-[70px] p-4 rounded-3xl border border-white/5 bg-white/[0.03] backdrop-blur-sm">
               {melds.map((meldGroup, gIdx) => (
-                <div key={gIdx} className="flex gap-1 bg-zinc-950/40 p-1.5 rounded-xl border border-emerald-900/20 shadow-lg">
+                <div key={gIdx} className="flex gap-1.5 bg-white/[0.05] p-2 rounded-2xl border border-emerald-400/10 shadow-xl backdrop-blur-md">
                   {meldGroup.map((c, cIdx) => (
                     <div key={cIdx} className="w-8 h-12 md:w-9 md:h-13 bg-white rounded-md flex flex-col items-center justify-center shadow-sm relative overflow-hidden">
                       <span className={`text-[10px] font-black leading-none ${c.suit === 'hearts' || c.suit === 'diamonds' ? 'text-red-600' : 'text-zinc-900'}`}>
@@ -712,9 +712,11 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
             onClick={() => setViewingOpponent(null)}
           >
             <div
-              className="w-full max-w-md bg-zinc-950 border border-zinc-800 rounded-3xl p-6 shadow-2xl animate-scale-up flex flex-col max-h-[80vh]"
+              className="w-full max-w-md bg-zinc-950/80 backdrop-blur-2xl border border-white/10 rounded-[2.5rem] p-8 shadow-[0_30px_100px_rgba(0,0,0,0.8)] animate-scale-up flex flex-col max-h-[85vh] relative overflow-hidden"
               onClick={(e) => e.stopPropagation()}
             >
+              {/* Decorative Glow */}
+              <div className="absolute -top-24 -right-24 w-64 h-64 bg-rose-500/10 rounded-full blur-[80px] pointer-events-none" />
               <div className="flex justify-between items-center mb-6">
                 <div className="flex flex-col">
                   <span className="text-[8px] font-mono font-black text-rose-500 uppercase tracking-[0.3em] leading-none mb-1">KARTU TURUN</span>
