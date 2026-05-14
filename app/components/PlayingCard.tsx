@@ -40,20 +40,29 @@ export default function PlayingCard({
   const symbol = getSuitSymbol(suit);
   const colorClass = getSuitColor(suit);
 
-  // Definisikan kelas ukuran bawaan yang lebih kecil hanya jika ukuran kustom tidak dipasok via className!
-  const sizeClasses = className.includes("w-") ? "" : "w-16 h-24 sm:w-20 sm:h-30";
+  // Gunakan inline style untuk dimensi agar tidak bisa di-override oleh Flexbox/Grid apapun
+  const cardStyle: React.CSSProperties = {
+    width: "64px",
+    height: "96px",
+    minWidth: "64px",
+    minHeight: "96px",
+    maxWidth: "64px",
+    maxHeight: "96px",
+    flexShrink: 0,
+  };
 
   if (!faceUp) {
     return (
       <div
         onClick={onClick}
-        className={`rounded-xl relative overflow-hidden flex items-center justify-center cursor-pointer border-2 border-white shadow-xl transition-all active:scale-95 select-none ${sizeClasses} ${className}`}
+        className={`rounded-xl relative overflow-hidden flex items-center justify-center cursor-pointer border-2 border-white shadow-xl transition-all active:scale-95 select-none ${className}`}
         style={{
+          ...cardStyle,
           background: "repeating-linear-gradient(45deg, #991b1b, #991b1b 10px, #7f1d1d 10px, #7f1d1d 20px)",
         }}
       >
         <div className="absolute inset-2 border border-white/30 rounded-lg flex items-center justify-center">
-          <div className="text-gold font-serif text-sm sm:text-xl opacity-80 rotate-12">♠♣♦♥</div>
+          <div className="text-gold font-serif text-sm opacity-80 rotate-12">♠♣♦♥</div>
         </div>
       </div>
     );
@@ -64,22 +73,23 @@ export default function PlayingCard({
   return (
     <div
       onClick={onClick}
-      className={`poker-card bg-white rounded-xl shadow-lg border-2 cursor-pointer select-none flex flex-col justify-between p-1.5 sm:p-2 relative transition-all active:scale-95 ${
-        isSelected 
-          ? "border-gold -translate-y-6 shadow-gold/50 shadow-xl" 
-          : isJoker 
-            ? "border-amber-200/80" 
+      style={cardStyle}
+      className={`poker-card bg-white rounded-xl shadow-lg border-2 cursor-pointer select-none flex flex-col justify-between p-1.5 relative transition-all active:scale-95 ${
+        isSelected
+          ? "border-gold shadow-gold/50 shadow-xl"
+          : isJoker
+            ? "border-amber-200/80"
             : "border-zinc-200"
-      } ${sizeClasses} ${className}`}
+      } ${className}`}
     >
       {/* Top-Left corner */}
       <div className={`flex flex-col items-center leading-none ${colorClass}`}>
-        <span className="text-xs sm:text-base font-bold font-sans">{value === "JKR" ? "J" : value}</span>
-        <span className="text-[10px] sm:text-xs -mt-0.5">{symbol}</span>
+        <span className="text-xs font-bold font-sans">{value === "JKR" ? "J" : value}</span>
+        <span className="text-[10px] -mt-0.5">{symbol}</span>
       </div>
 
       {/* Center Emblem */}
-      <div className={`absolute inset-0 flex items-center justify-center opacity-20 text-2xl sm:text-4xl pointer-events-none ${colorClass}`}>
+      <div className={`absolute inset-0 flex items-center justify-center opacity-20 text-2xl pointer-events-none ${colorClass}`}>
         {isJoker ? (
           <div className="flex flex-col items-center scale-90 opacity-80">
             <span className="text-3xl">★</span>
@@ -90,8 +100,8 @@ export default function PlayingCard({
 
       {/* Bottom-Right corner */}
       <div className={`flex flex-col items-center leading-none self-end rotate-180 ${colorClass}`}>
-        <span className="text-xs sm:text-base font-bold font-sans">{value === "JKR" ? "J" : value}</span>
-        <span className="text-[10px] sm:text-xs -mt-0.5">{symbol}</span>
+        <span className="text-xs font-bold font-sans">{value === "JKR" ? "J" : value}</span>
+        <span className="text-[10px] -mt-0.5">{symbol}</span>
       </div>
     </div>
   );

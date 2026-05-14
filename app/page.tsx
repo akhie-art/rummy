@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { Card, createDeck, shuffleDeck, sortHand, canDrawDiscardCard, getCardPoints, isSet, isRun } from "./utils/gameLogic";
+import { Card, createDeck, shuffleDeck, sortHand, canDrawDiscardCard, getCardPoints, getMeldPoints, isSet, isRun } from "./utils/gameLogic";
 import { supabase } from "./utils/supabaseClient";
 
 // Import View Komponen Modular Baru
@@ -41,11 +41,73 @@ const reconcilePlayerHand = (currentLocal: Card[], incomingServer: Card[]): Card
   if (reconciled.length !== incomingServer.length) {
     return incomingServer;
   }
+
+  // OPTIMIZATION: Jika urutan ID sama persis, kembalikan array asli agar React tidak re-render
+  if (currentLocal.length === reconciled.length) {
+    const isSameOrder = currentLocal.every((c, i) => c.id === reconciled[i].id);
+    if (isSameOrder) return currentLocal;
+  }
+
   return reconciled;
 };
 
 export default function Home() {
   const [view, setView] = useState<ViewState>("landing");
+  // ... state vars ...
+
+  const applyRemoteState = (newState: RemoteGameState, myName: string) => {
+    if (!newState) return;
+
+    // 1. Players (Atomic check to avoid re-render loops)
+    setRemotePlayers((prev: RemotePlayer[]) => {
+      if (prev.length !== newState.players.length) return newState.players;
+      const hasChanges = prev.some((p, i) => {
+        const sP = newState.players[i];
+        return p.name !== sP.name || p.hand.length !== sP.hand.length || p.score !== sP.score || p.hasDrawn !== sP.hasDrawn;
+      });
+      return hasChanges ? newState.players : prev;
+    });
+
+    // 2. Game Status
+    setGameStatus((prev: string) => prev !== newState.status ? newState.status : prev);
+
+    // 3. Active Turn
+    setActiveTurnIndex((prev: number) => prev !== newState.turn_index ? newState.turn_index : prev);
+
+    // 4. Deck & Discard
+    setDeck((prev: Card[]) => prev.length !== newState.deck.length ? newState.deck : prev);
+    setDiscardPile((prev: Card[]) => {
+      if (prev.length !== newState.discard_pile.length) return newState.discard_pile;
+      if (prev.length > 0 && prev[0].id !== newState.discard_pile[0].id) return newState.discard_pile;
+      return prev;
+    });
+
+    // 5. Chat
+    setChatMessages((prev: ChatMessage[]) => {
+      const incoming = newState.chat_messages || [];
+      if (prev.length !== incoming.length) return incoming;
+      return prev;
+    });
+
+    // 6. View Routing
+    setView((currView: ViewState) => {
+      if (newState.status === "playing") {
+        if (currView === "player_lobby") return "player_game";
+        if (currView === "host_lobby") return "host_game";
+      } else if (newState.status === "waiting") {
+        if (currView === "player_game") return "player_lobby";
+        if (currView === "host_game") return "host_lobby";
+      }
+      return currView;
+    });
+
+    // 7. Local Hand Reconcile
+    const serverMe = newState.players.find(p => p.name.toUpperCase() === myName.toUpperCase());
+    if (serverMe) {
+      setPlayerHand((current: Card[]) => reconcilePlayerHand(current, serverMe.hand));
+      setHasDrawnThisTurn((prev: boolean) => prev !== serverMe.hasDrawn ? serverMe.hasDrawn : prev);
+    }
+  };
   const [roomCode, setRoomCode] = useState("");
   const [playerName, setPlayerName] = useState("");
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -60,7 +122,14 @@ export default function Home() {
   const [remotePlayers, setRemotePlayers] = useState<RemotePlayer[]>([]);
   const [gameStatus, setGameStatus] = useState<"waiting" | "playing" | "finished">("waiting");
   const [globalGameOverData, setGlobalGameOverData] = useState<{
-    standings: { name: string; roundPoints: number; prevScore: number; totalScore: number }[];
+    standings: {
+      name: string;
+      roundPoints: number;
+      prevScore: number;
+      totalScore: number;
+      melds?: import('./utils/gameLogic').Card[][];
+      closingCard?: import('./utils/gameLogic').Card;
+    }[];
     updatedPlayers: RemotePlayer[];
   } | null>(null);
   const [activeTurnIndex, setActiveTurnIndex] = useState<number>(0);
@@ -69,6 +138,12 @@ export default function Home() {
   // --- LOBBY INTERACTIVE TAUNTS ---
   const [activeTauntOverlay, setActiveTauntOverlay] = useState<{ sender: string; emoji: string } | null>(null);
   const lastSeenTauntTime = useRef<number>(0);
+  const lastSeenFireTauntTime = useRef<number>(0);
+  const channelRef = useRef<any>(null);
+  const prevGameStatus = useRef<string>("waiting");
+
+  const [isDealingCards, setIsDealingCards] = useState(false);
+  const [showWhoStartsModal, setShowWhoStartsModal] = useState<{ name: string; isMe: boolean } | null>(null);
 
   // --- GAME STATE ---
   const [deck, setDeck] = useState<Card[]>([]);
@@ -100,9 +175,32 @@ export default function Home() {
     if (gameStatus === "finished" && !globalGameOverData && (view === "host_game" || view === "player_game")) {
       const activePlayers = remotePlayers.filter(p => !p.isHost);
       const rawStandings = activePlayers.map((player) => {
-        const roundPoints = player.hand.reduce((sum, card) => sum + getCardPoints(card), 0);
-        const totalScore = player.score; // Already updated in DB by the winner
-        const prevScore = totalScore - roundPoints; // Derive prev score
+        let roundPoints = player.hand.reduce((sum, card) => sum + getCardPoints(card), 0);
+        
+        // Jika pemain menang (tangan kosong): hitung bonus tutup (jika ada) + poin meld
+        if (player.hand.length === 0) {
+          const topCard = discardPile.length > 0 ? discardPile[0] : null;
+          // Hanya beri bonus 10x jika kartu teratas buangan dibuang oleh si pemenang (Tutup Kartu)
+          const isTutupWin = topCard && topCard.thrownBy === player.name;
+          const closingBonus = isTutupWin ? getCardPoints(topCard as Card) * 10 : 0;
+          
+          const meldPoints = (player.melds || []).reduce((sum: number, group: Card[]) => sum + getMeldPoints(group), 0);
+          roundPoints = -(closingBonus + meldPoints);
+          
+          const totalScore = player.score;
+          const prevScore = totalScore - roundPoints;
+          return {
+            name: player.name,
+            roundPoints,
+            prevScore,
+            totalScore,
+            melds: (player.melds || []) as Card[][],
+            closingCard: isTutupWin ? (topCard as Card) : undefined,
+          };
+        }
+
+        const totalScore = player.score;
+        const prevScore = totalScore - roundPoints;
         return { name: player.name, roundPoints, prevScore, totalScore };
       });
       // Lowest score wins
@@ -113,12 +211,10 @@ export default function Home() {
     }
   }, [gameStatus, remotePlayers, view, globalGameOverData]);
 
-  const subscribeToRoom = (code: string, myName: string) => {
-    // 1. Bersihkan channel lama secara aman (Jangan biarkan error mematikan aplikasi)
+  const subscribeToRoom = async (code: string, myName: string) => {
+    // 1. Bersihkan channel lama secara aman (AWAIT agar tidak bentrok dengan channel baru!)
     try {
-      supabase.removeAllChannels().catch((e) => {
-        console.warn("WebSocket disconnect skipped:", e.message);
-      });
+      await supabase.removeAllChannels();
     } catch (err) {
       console.warn("Supabase cleanup failed silently:", err);
     }
@@ -126,7 +222,11 @@ export default function Home() {
     // 2. Coba bangun langganan WebSocket (Bungkus try-catch untuk jaring pengaman total)
     try {
       const channel = supabase
-        .channel(`channel_${code}`)
+        .channel(`channel_${code.toUpperCase()}`, {
+          config: {
+            broadcast: { self: true }, // Sangat membantu untuk verifikasi lokal!
+          }
+        })
         .on(
           "postgres_changes",
           {
@@ -145,12 +245,7 @@ export default function Home() {
               console.log("🎯 MATCHING ROOM FOUND! Applying State...");
               const newState = incomingRoom.game_state;
               if (newState) {
-                setRemotePlayers(newState.players);
-                setGameStatus(newState.status);
-                setActiveTurnIndex(newState.turn_index);
-                setDeck(newState.deck);
-                setDiscardPile(newState.discard_pile);
-                setChatMessages(newState.chat_messages || []);
+                applyRemoteState(newState, myName);
 
                 // Detect and trigger active interactive lobby taunts!
                 if (newState.taunt && newState.taunt.timestamp > lastSeenTauntTime.current) {
@@ -160,31 +255,66 @@ export default function Home() {
                   setTimeout(() => setActiveTauntOverlay(null), 2500);
                 }
 
-                // Smart auto-routing view states based on database updates
-                setView((currView) => {
-                  if (newState.status === "playing") {
-                    if (currView === "player_lobby") return "player_game";
-                    if (currView === "host_lobby") return "host_game";
-                  } else if (newState.status === "waiting") {
-                    if (currView === "player_game") return "player_lobby";
-                    if (currView === "host_game") return "host_lobby";
+                // Detect and trigger FIRE TAUNT (Bakar Layar)
+                if (newState.fireTaunt && newState.fireTaunt.timestamp > lastSeenFireTauntTime.current) {
+                  lastSeenFireTauntTime.current = newState.fireTaunt.timestamp;
+                  
+                  // ONLY trigger if I am the target!
+                  if (newState.fireTaunt.target.toUpperCase() === myName.toUpperCase()) {
+                    setFireTaunt({ active: true, sender: newState.fireTaunt.sender });
+                    // Auto clean-up after 2.2s
+                    setTimeout(() => setFireTaunt({ active: false, sender: null }), 2200);
                   }
-                  return currView;
-                });
-                
-                // Find local player's real-time server reference to update their hand
-                const serverMe = newState.players.find(p => p.name.toUpperCase() === myName.toUpperCase());
-                if (serverMe) {
-                  setPlayerHand((current) => reconcilePlayerHand(current, serverMe.hand));
-                  setHasDrawnThisTurn(serverMe.hasDrawn);
                 }
+
+                // Detect Game Start for Animation
+                if (prevGameStatus.current === "waiting" && newState.status === "playing") {
+                  setIsDealingCards(true);
+                  // Start Dealing Animation Sequence
+                  setTimeout(() => {
+                    setIsDealingCards(false);
+                    const playingPlayers = newState.players.filter(p => !p.isHost);
+                    const startingPlayer = playingPlayers[newState.turn_index];
+                    if (startingPlayer) {
+                      setShowWhoStartsModal({ 
+                        name: startingPlayer.name, 
+                        isMe: startingPlayer.name.toUpperCase() === myName.toUpperCase() 
+                      });
+                      // Auto-close modal after 3.5s
+                      setTimeout(() => setShowWhoStartsModal(null), 3500);
+                    }
+                  }, 3000); // Animation duration
+                }
+                prevGameStatus.current = newState.status;
+
+                // Smart auto-routing view states handled by applyRemoteState logic
+                console.log("Routing logic checked via applyRemoteState");
+                
+                // Hand reconciliation handled by applyRemoteState
+                console.log("Hand sync finished via applyRemoteState");
               }
-            } else {
-              console.log("⚠️ Ignored Event (Non-Matching Room Code)");
             }
           }
         )
-        .subscribe();
+        .on(
+          "broadcast",
+          { event: "fire-taunt" },
+          ({ payload }) => {
+            console.log("🔥 [BROADCAST] FIRE RECEIVED for target:", payload.target, "by sender:", payload.sender);
+            
+            // Trigger overlay if target matches OR if it's from ME (self-broadcast test)
+            if (payload.target.toUpperCase() === myName.toUpperCase()) {
+              console.log("🎯 [BROADCAST] I AM THE TARGET! Burning...");
+              setFireTaunt({ active: true, sender: payload.sender });
+              setTimeout(() => setFireTaunt({ active: false, sender: null }), 2200);
+            }
+          }
+        )
+        .subscribe((status) => {
+          if (status === "SUBSCRIBED") {
+            channelRef.current = channel;
+          }
+        });
 
       return channel;
     } catch (err) {
@@ -232,7 +362,7 @@ export default function Home() {
       localStorage.setItem("rummy_player_name", "Host");
       localStorage.setItem("rummy_is_host", "true");
 
-      subscribeToRoom(newCode, "Host");
+      await subscribeToRoom(newCode, "Host");
       setView("host_lobby");
     } else {
       setToastMsg("Gagal Membuat Meja!");
@@ -296,7 +426,7 @@ export default function Home() {
       localStorage.setItem("rummy_player_name", targetName);
       localStorage.setItem("rummy_is_host", "false");
 
-      subscribeToRoom(targetCode, targetName);
+      await subscribeToRoom(targetCode, targetName);
       setView("player_lobby");
     } else {
       setToastMsg("Gagal Bergabung!");
@@ -540,7 +670,7 @@ export default function Home() {
     }
 
     // Step 5: Re-subscribe dynamic real-time websocket stream
-    subscribeToRoom(savedRoom.toUpperCase(), savedName);
+    await subscribeToRoom(savedRoom.toUpperCase(), savedName);
     
     setToastMsg("Kembali terhubung ke meja permainan! ⚡🏆");
     setTimeout(() => setToastMsg(null), 3000);
@@ -674,38 +804,7 @@ export default function Home() {
           console.log(`✅ [POLLER SUCCESS] Menemukan data! Jumlah Pemain di Server: ${serverState.players.length}`);
           
           // Sinkronisasi paksa data state server ke state lokal secara periodik
-          setRemotePlayers(serverState.players);
-          setGameStatus(serverState.status);
-          setActiveTurnIndex(serverState.turn_index);
-          setDeck(serverState.deck);
-          setDiscardPile(serverState.discard_pile);
-          setChatMessages(serverState.chat_messages || []);
-
-          // Sinkronisasi interaktif taunt lobby via polling cadangan!
-          if (serverState.taunt && serverState.taunt.timestamp > lastSeenTauntTime.current) {
-            lastSeenTauntTime.current = serverState.taunt.timestamp;
-            setActiveTauntOverlay({ sender: serverState.taunt.sender, emoji: serverState.taunt.emoji });
-            setTimeout(() => setActiveTauntOverlay(null), 2500);
-          }
-
-          // Auto-routing view jika status game berubah menjadi bermain
-          setView((currView) => {
-            if (serverState.status === "playing") {
-              if (currView === "player_lobby") return "player_game";
-              if (currView === "host_lobby") return "host_game";
-            } else if (serverState.status === "waiting") {
-              if (currView === "player_game") return "player_lobby";
-              if (currView === "host_game") return "host_lobby";
-            }
-            return currView;
-          });
-
-          // Sinkronisasi kartu tangan milik pemain aktif
-          const serverMe = serverState.players.find(p => p.name.toUpperCase() === playerName.toUpperCase());
-          if (serverMe) {
-            setPlayerHand((current) => reconcilePlayerHand(current, serverMe.hand));
-            setHasDrawnThisTurn(serverMe.hasDrawn);
-          }
+          applyRemoteState(serverState, playerName);
         } else {
           console.warn("⚠️ [POLLER]: Data tidak ditemukan di server untuk room ini.");
         }
@@ -826,8 +925,7 @@ export default function Home() {
 
     await updateRemoteRoom(updatedState);
     
-    // OPTIMISTIC LOCAL UPDATE:
-    // Mengambil kartu buangan instan tanpa lag jaringan!
+    // OPTIMISTIC LOCAL UPDATE
     setDiscardPile(nextDiscard);
     setPlayerHand(updatedHand);
     setHasDrawnThisTurn(true);
@@ -838,7 +936,8 @@ export default function Home() {
 
   const discardSelected = async (cardId: string) => {
     if (!cardId) return;
-    if (!hasDrawnThisTurn) return;
+    // Izinkan TUTUP kartu kapanpun jika sisa 1 kartu (bisa menang meski belum ambil kartu)
+    if (!hasDrawnThisTurn && playerHand.length > 1) return;
 
     const targetCard = playerHand.find(c => c.id === cardId);
     if (!targetCard) return;
@@ -866,8 +965,19 @@ export default function Home() {
       finalStatus = "finished";
       
       const rawStandings = playingPlayers.map((player) => {
+        const isWinner = player.name.toUpperCase() === playerName.toUpperCase() && updatedHand.length === 0;
         const pHand = player.name.toUpperCase() === playerName.toUpperCase() ? updatedHand : player.hand;
-        const roundPoints = pHand.reduce((sum, card) => sum + getCardPoints(card), 0);
+        let roundPoints = pHand.reduce((sum, card) => sum + getCardPoints(card), 0);
+        
+        // LOGIC TUTUP KARTU: Bonus penutup (10x) + poin semua kartu meld yang sudah diturunkan
+        if (isWinner) {
+          const closingBonus = getCardPoints(targetCard) * 10;
+          // Hitung total poin kartu yang sudah diturunkan (melds)
+          const myMelds = remotePlayers.find(p => p.name.toUpperCase() === playerName.toUpperCase())?.melds || [];
+          const meldPoints = myMelds.reduce((sum: number, group: Card[]) => sum + getMeldPoints(group), 0);
+          roundPoints = -(closingBonus + meldPoints); // Negatif agar total poin berkurang (skor terendah menang)
+        }
+
         const prevScore = player.score || 0;
         const totalScore = prevScore + roundPoints;
         return { name: player.name, totalScore };
@@ -938,11 +1048,44 @@ export default function Home() {
       return p;
     });
 
+    let finalStatus: RemoteGameState["status"] = "playing";
+    let finalPlayers = nextPlayers;
+
+    // JIKA KARTU HABIS SETELAH TURUN (MELD): PEMAIN MENANG!
+    if (updatedHand.length === 0) {
+      finalStatus = "finished";
+      const playingPlayers = nextPlayers.filter(p => !p.isHost);
+      
+      const rawStandings = playingPlayers.map((player) => {
+        const isWinner = player.name.toUpperCase() === playerName.toUpperCase();
+        let roundPoints = player.hand.reduce((sum, card) => sum + getCardPoints(card), 0);
+        
+        if (isWinner) {
+          // Menang lewat Turun Kartu (Meld): Hanya dapat poin kartu yang turun (tidak ada bonus tutup 10x)
+          const meldPoints = updatedMelds.reduce((sum: number, group: Card[]) => sum + getMeldPoints(group), 0);
+          roundPoints = -meldPoints; 
+        }
+
+        const prevScore = player.score || 0;
+        const totalScore = prevScore + roundPoints;
+        return { name: player.name, totalScore };
+      });
+
+      finalPlayers = nextPlayers.map((p) => {
+        if (p.isHost) return p;
+        const match = rawStandings.find((s) => s.name === p.name);
+        return {
+          ...p,
+          score: match ? match.totalScore : p.score,
+        };
+      });
+    }
+
     const updatedState: RemoteGameState = {
-      status: "playing",
+      status: finalStatus,
       deck: deck,
       discard_pile: discardPile,
-      players: nextPlayers,
+      players: finalPlayers,
       turn_index: activeTurnIndex
     };
 
@@ -950,9 +1093,15 @@ export default function Home() {
 
     // Optimistic Local Update
     setPlayerHand(updatedHand);
-    setRemotePlayers(nextPlayers);
-    setToastMsg("🎉 Sukses Menurunkan Kartu!");
-    setTimeout(() => setToastMsg(null), 2000);
+    setRemotePlayers(finalPlayers);
+    setGameStatus(finalStatus);
+
+    if (finalStatus === "finished") {
+      setToastMsg("🏆 PERMAINAN SELESAI!");
+    } else {
+      setToastMsg("🎉 Sukses Menurunkan Kartu!");
+    }
+    setTimeout(() => setToastMsg(null), 2500);
     
     return true;
   };
@@ -1026,22 +1175,38 @@ export default function Home() {
     }
   };
 
-  // Funny Interactive Taunt with Bot Retaliation
-  const sendFireTaunt = (targetName: string) => {
-    setToastMsg(`Anda membakar layar ${targetName}! 🔥`);
-    setTimeout(() => setToastMsg(null), 2000);
+  // Funny Interactive Taunt with REAL-TIME BROADCAST Sync
+  const sendFireTaunt = async (targetName: string) => {
+    console.log(`🚀 [TAUNT] Attempting to burn ${targetName}...`);
+    setToastMsg(`Membakar layar ${targetName}... 🔥`);
+    setTimeout(() => setToastMsg(null), 1500);
 
-    // Randomized Retaliation Timer (3-5 seconds later)
-    const delay = 3000 + Math.floor(Math.random() * 2000);
-    setTimeout(() => {
-      // Play the fiery retaliation overlay
-      setFireTaunt({ active: true, sender: targetName });
-      
-      // Auto clean-up when CSS animation finishes (2.2s)
-      setTimeout(() => {
-        setFireTaunt({ active: false, sender: null });
-      }, 2200);
-    }, delay);
+    const payload = {
+      target: targetName,
+      sender: playerName || "Pemain"
+    };
+
+    if (channelRef.current) {
+      console.log("📡 [TAUNT] Sending broadcast via existing channel...");
+      channelRef.current.send({
+        type: "broadcast",
+        event: "fire-taunt",
+        payload
+      });
+    } else {
+      console.warn("⚠️ [TAUNT] Channel not ready! Attempting emergency sync...");
+      // Re-subscribe if channel is lost
+      const chan = await subscribeToRoom(roomCode, playerName || "Guest");
+      if (chan) {
+        setTimeout(() => {
+          chan.send({
+            type: "broadcast",
+            event: "fire-taunt",
+            payload
+          });
+        }, 500);
+      }
+    }
   };
 
   const syncHandSort = async (newSortedHand: Card[]) => {
@@ -1417,6 +1582,67 @@ export default function Home() {
       )}
 
       {/* ========================================= */}
+      {/* GLOBAL MODALS & ANIMATIONS              */}
+      {/* ========================================= */}
+
+      {/* 1. DEALING CARDS ANIMATION */}
+      {isDealingCards && (
+        <div className="fixed inset-0 z-[100000] flex items-center justify-center bg-black/60 backdrop-blur-sm overflow-hidden pointer-events-none">
+          <div className="relative w-full h-full">
+            {/* Center Deck Source */}
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-20 h-28 bg-zinc-100 rounded-xl border-2 border-zinc-300 shadow-2xl flex items-center justify-center">
+              <div className="w-16 h-24 border border-zinc-200 rounded-lg bg-zinc-50 flex items-center justify-center">
+                <div className="w-10 h-14 bg-emerald-100/50 rounded flex items-center justify-center">
+                  <div className="w-6 h-8 border border-emerald-200 rounded-sm" />
+                </div>
+              </div>
+            </div>
+
+            {/* Flying Cards Simulation */}
+            {[...Array(16)].map((_, i) => (
+              <div
+                key={i}
+                className="absolute top-1/2 left-1/2 w-16 h-24 bg-white rounded-lg border border-zinc-300 shadow-lg animate-deal-card"
+                style={{
+                  animationDelay: `${i * 0.1}s`,
+                  "--target-x": `${(i % 4 === 0 ? -180 : i % 4 === 1 ? 180 : i % 4 === 2 ? -180 : 180)}%`,
+                  "--target-y": `${(i % 4 < 2 ? -220 : 220)}%`,
+                  "--target-rotate": `${(i * 90) % 360}deg`
+                } as any}
+              />
+            ))}
+
+            <div className="absolute top-[62%] left-1/2 -translate-x-1/2 text-white font-black italic tracking-[0.4em] text-xl drop-shadow-2xl animate-pulse text-center">
+              MEMBAGI KARTU...
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2. WHO STARTS FIRST MODAL */}
+      {showWhoStartsModal && (
+        <div className="fixed inset-0 z-[100001] flex items-center justify-center px-6 animate-fade-in">
+          <div className="absolute inset-0 bg-black/85 backdrop-blur-xl" />
+          <div className="relative w-full max-w-sm bg-[#051712]/95 border border-emerald-900/40 rounded-[2.5rem] p-10 shadow-2xl text-center animate-scale-up">
+            <div className="mb-6 flex justify-center">
+              <div className="w-20 h-20 rounded-full bg-emerald-500/20 border border-emerald-500/50 flex items-center justify-center animate-bounce shadow-[0_0_30px_rgba(16,185,129,0.3)]">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+                </svg>
+              </div>
+            </div>
+            <h2 className="text-zinc-500 font-mono text-[10px] tracking-[0.4em] uppercase mb-2 leading-none">Giliran Pertama</h2>
+            <div className="text-4xl font-black text-white mb-4 tracking-tighter">
+              {showWhoStartsModal.isMe ? "GILIRAN ANDA" : showWhoStartsModal.name.toUpperCase()}
+            </div>
+            <div className="text-emerald-400 font-mono text-[9px] tracking-widest uppercase py-2.5 px-6 border border-emerald-500/30 rounded-full inline-block bg-emerald-500/10">
+              {showWhoStartsModal.isMe ? "BUANG KARTU DULUAN" : "MOHON TUNGGU..."}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================= */}
       {/* INTERACTIVE GAME TAUNTS OVERLAYS        */}
       {/* ========================================= */}
       
@@ -1471,49 +1697,117 @@ export default function Home() {
             <div className="space-y-2.5 mb-7 relative z-10">
               {globalGameOverData.standings.map((entry, idx) => {
                 const isWinner = idx === 0;
+                const suitOf = (s: string) => s === "hearts" ? "♥" : s === "diamonds" ? "♦" : s === "clubs" ? "♣" : "♠";
+                const isRedSuit = (s: string) => s === "hearts" || s === "diamonds";
                 return (
-                  <div 
+                  <div
                     key={entry.name}
-                    className={`flex justify-between items-center px-4 py-3.5 rounded-xl border transition-all duration-300 ${
+                    className={`flex flex-col px-4 py-3.5 rounded-xl border transition-all duration-300 ${
                       isWinner
                         ? "bg-emerald-950/30 border-emerald-700/40 shadow-[inset_0_0_20px_rgba(16,185,129,0.1)]"
                         : "bg-zinc-950/50 border-zinc-900/80 hover:border-zinc-800"
                     }`}
                   >
-                    <div className="flex items-center gap-3">
-                      {/* Position Badge */}
-                      <div className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-[10px] border ${
-                        idx === 0
-                          ? "bg-amber-500/20 border-amber-500/60 text-amber-400"
-                          : idx === 1
-                          ? "bg-zinc-400/20 border-zinc-400/60 text-zinc-300"
-                          : idx === 2
-                          ? "bg-amber-800/20 border-amber-800/60 text-amber-600"
-                          : "bg-zinc-900 border-zinc-800 text-zinc-600"
-                      }`}>
-                        {idx + 1}
+                    {/* Top row: rank + name + score */}
+                    <div className="flex justify-between items-center">
+                      <div className="flex items-center gap-3">
+                        {/* Position Badge */}
+                        <div className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-[10px] border ${
+                          idx === 0
+                            ? "bg-amber-500/20 border-amber-500/60 text-amber-400"
+                            : idx === 1
+                            ? "bg-zinc-400/20 border-zinc-400/60 text-zinc-300"
+                            : idx === 2
+                            ? "bg-amber-800/20 border-amber-800/60 text-amber-600"
+                            : "bg-zinc-900 border-zinc-800 text-zinc-600"
+                        }`}>
+                          {idx + 1}
+                        </div>
+
+                        {/* Player Identity */}
+                        <div className="flex flex-col">
+                          <span className={`text-xs font-bold tracking-wide uppercase ${isWinner ? "text-emerald-400" : "text-zinc-200"}`}>
+                            {entry.name}
+                          </span>
+                          <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-wider">
+                            {entry.roundPoints < 0 ? (
+                              <>Bonus Tutup: <span className="text-emerald-400 font-bold">+{Math.abs(entry.roundPoints)}</span></>
+                            ) : (
+                              <>Sisa Kartu: <span className={entry.roundPoints > 0 ? "text-red-500/80" : "text-emerald-500/80"}>+{entry.roundPoints}</span></>
+                            )}
+                          </span>
+                        </div>
                       </div>
-                      
-                      {/* Player Identity */}
-                      <div className="flex flex-col">
-                        <span className={`text-xs font-bold tracking-wide uppercase ${isWinner ? "text-emerald-400" : "text-zinc-200"}`}>
-                          {entry.name}
+
+                      {/* Cumulative Score Badge */}
+                      <div className="flex flex-col items-end">
+                        <span className={`text-[14px] font-black font-mono ${isWinner ? "text-emerald-400" : entry.totalScore < 0 ? "text-red-400" : "text-zinc-100"}`}>
+                          {entry.totalScore < 0 ? `+${Math.abs(entry.totalScore)}` : entry.totalScore}
                         </span>
-                        <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-wider">
-                          Sisa Kartu: <span className={entry.roundPoints > 0 ? "text-red-500/80" : "text-emerald-500/80"}>+{entry.roundPoints}</span>
+                        <span className="text-[7px] font-mono text-zinc-600 uppercase tracking-widest leading-none mt-0.5">
+                          Total Poin
                         </span>
                       </div>
                     </div>
 
-                    {/* Cumulative Score Badge */}
-                    <div className="flex flex-col items-end">
-                      <span className={`text-[14px] font-black font-mono ${isWinner ? "text-emerald-400" : "text-zinc-100"}`}>
-                        {entry.totalScore}
-                      </span>
-                      <span className="text-[7px] font-mono text-zinc-600 uppercase tracking-widest leading-none mt-0.5">
-                        Total Poin
-                      </span>
-                    </div>
+                    {/* ── Winner Detail: Kartu Diturunkan + Kartu Penutup ── */}
+                    {isWinner && (entry.melds?.length || entry.closingCard) && (
+                      <div className="mt-3 pt-3 border-t border-emerald-900/30 flex flex-col gap-2.5">
+
+                        {/* Kartu yang diturunkan (melds) */}
+                        {entry.melds && entry.melds.length > 0 && (
+                          <div className="flex flex-col gap-1.5">
+                            <span className="text-[7px] font-mono text-zinc-500 uppercase tracking-[0.2em]">
+                              Kartu Diturunkan ({entry.melds.flat().length} kartu)
+                            </span>
+                            <div className="flex flex-col gap-1">
+                              {entry.melds.map((group, gIdx) => (
+                                <div key={gIdx} className="flex items-center gap-1 flex-wrap">
+                                  <span className="text-[7px] font-mono text-zinc-600 mr-1">#{gIdx + 1}</span>
+                                  {group.map((card, cIdx) => (
+                                    <span
+                                      key={cIdx}
+                                      className={`px-1.5 py-0.5 rounded-md text-[9px] font-bold font-mono border ${
+                                        isRedSuit(card.suit)
+                                          ? "bg-red-950/40 border-red-800/40 text-red-400"
+                                          : "bg-zinc-900/60 border-zinc-700/40 text-zinc-300"
+                                      }`}
+                                    >
+                                      {card.value}{suitOf(card.suit)}
+                                    </span>
+                                  ))}
+                                  <span className="text-[7px] font-mono text-zinc-600 ml-auto">
+                                    +{getMeldPoints(group)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Kartu penutup */}
+                        {entry.closingCard && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-[7px] font-mono text-zinc-500 uppercase tracking-[0.2em] flex-shrink-0">
+                              Kartu Tutup
+                            </span>
+                            <span
+                              className={`px-1.5 py-0.5 rounded-md text-[9px] font-bold font-mono border ${
+                                isRedSuit(entry.closingCard.suit)
+                                  ? "bg-red-950/40 border-red-800/40 text-red-400"
+                                  : "bg-zinc-900/60 border-zinc-700/40 text-zinc-300"
+                              }`}
+                            >
+                              {entry.closingCard.value}{suitOf(entry.closingCard.suit)}
+                            </span>
+                            <span className="text-[7px] font-mono text-amber-500/80 ml-auto">
+                              ×10 = +{getCardPoints(entry.closingCard) * 10}
+                            </span>
+                          </div>
+                        )}
+
+                      </div>
+                    )}
                   </div>
                 );
               })}

@@ -29,6 +29,11 @@ export interface RemoteGameState {
     emoji: string;
     timestamp: number;
   };
+  fireTaunt?: {
+    target: string;
+    sender: string;
+    timestamp: number;
+  };
   chat_messages?: ChatMessage[];
 }
 

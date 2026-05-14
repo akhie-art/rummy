@@ -7,10 +7,12 @@ import { ViewState } from "../../types/game";
 import {
   DndContext,
   closestCenter,
+  closestCorners,
   PointerSensor,
   useSensor,
   useSensors,
   DragEndEvent,
+  useDroppable,
 } from "@dnd-kit/core";
 import {
   arrayMove,
@@ -78,11 +80,11 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
     onConfirm: () => void;
   } | null>(null);
 
-  // --- GAME START ANNOUNCEMENT MODAL ---
-  const [showIntroModal, setShowIntroModal] = useState<boolean>(true);
-
   // --- IMMERSIVE CARD REVEAL OVERLAY ---
   const [revealCard, setRevealCard] = useState<Card | null>(null);
+
+  // --- DISCARD OVERLAY: Kartu yang dipilih untuk dibuang (tap 1x setelah ambil) ---
+  const [discardOverlayCard, setDiscardOverlayCard] = useState<Card | null>(null);
 
   // --- LOCAL MULTI-CARD HAND SELECTION ---
   const [selectedCardIds, setSelectedCardIds] = useState<string[]>([]);
@@ -96,21 +98,76 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
     })
   );
 
+const DroppableDiscardArea = ({ isMyTurn, hasDrawnThisTurn }: { isMyTurn: boolean, hasDrawnThisTurn: boolean }) => {
+  const { isOver, setNodeRef } = useDroppable({
+    id: "discard-pile-drop-zone",
+  });
+  
+  if (!isMyTurn || !hasDrawnThisTurn) return <div className="flex-1" />;
+
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center px-8 py-2 animate-fade-in w-full">
+      <div 
+        ref={setNodeRef}
+        className={`w-full h-full max-h-[160px] max-w-sm border-2 border-dashed rounded-3xl flex flex-col items-center justify-center transition-all duration-300 ${
+          isOver 
+            ? "border-red-500 bg-red-950/40 scale-[1.02] shadow-[0_0_40px_rgba(239,68,68,0.3)]" 
+            : "border-zinc-800/80 bg-zinc-950/20"
+        }`}
+      >
+        <div className={`w-14 h-14 rounded-full mb-3 flex items-center justify-center transition-all duration-300 ${isOver ? "bg-red-500/20 scale-125 border border-red-500/40" : "bg-zinc-900 border border-zinc-800"}`}>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={isOver ? "#ef4444" : "#52525b"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={isOver ? "animate-bounce" : ""}>
+            <path d="M3 6h18m-2 0v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6m3 0V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2M10 11v6M14 11v6"/>
+          </svg>
+        </div>
+        <span className={`text-[11px] font-mono font-bold tracking-[0.2em] uppercase text-center transition-colors ${isOver ? "text-red-400" : "text-zinc-600"}`}>
+          {isOver ? "Lepas Untuk Buang" : "Seret Kartu Kesini"}
+        </span>
+        <span className={`text-[8px] font-mono tracking-wider mt-2 transition-colors ${isOver ? "text-red-500/70" : "text-zinc-700"}`}>
+          Atau tap 1x pada kartu
+        </span>
+      </div>
+    </div>
+  );
+};
+
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
+    
+    // Check if dropped on discard zone
+    if (over && over.id === "discard-pile-drop-zone") {
+      if (isMyTurn && hasDrawnThisTurn) {
+        discardSelected(active.id as string);
+        setSelectedCardIds([]);
+      }
+      return;
+    }
+
     if (over && active.id !== over.id) {
       const activeIndex = playerHand.findIndex((c) => c.id === active.id);
       const overIndex = playerHand.findIndex((c) => c.id === over.id);
-      const nextHand = arrayMove(playerHand, activeIndex, overIndex);
-      syncHandSort(nextHand);
+      if (activeIndex !== -1 && overIndex !== -1) {
+        const nextHand = arrayMove(playerHand, activeIndex, overIndex);
+        syncHandSort(nextHand);
+      }
     }
   };
 
   return (
     <div 
-      onClick={() => setSelectedDiscardIndex(null)}
+      onClick={() => {
+        // Klik di luar kartu → batalkan semua seleksi
+        setSelectedDiscardIndex(null);
+        setSelectedCardIds([]);
+        setDiscardOverlayCard(null);
+      }}
       className="fixed inset-0 bg-[#041410] z-50 flex flex-col justify-between select-none animate-fade-in"
     >
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCorners}
+        onDragEnd={handleDragEnd}
+      >
       {/* 5.1 Clean Top Status Bar */}
       <div className="pl-6 pr-36 py-3 flex justify-between items-center border-b border-zinc-900/80">
         <div className="flex items-center gap-3">
@@ -158,8 +215,11 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
               className="px-2.5 py-1 rounded-lg border border-zinc-800/60 hover:border-red-900/60 bg-black/20 hover:bg-red-950/15 text-[9px] font-mono text-zinc-500 hover:text-red-500 flex items-center gap-1.5 cursor-pointer transition-all uppercase active:scale-95 group"
               title={`Bakar layar ${bot.name}`}
             >
-              <span className="text-[8px] animate-pulse group-hover:scale-110 transition-transform">
-                🔥
+              <span className="group-hover:scale-110 transition-transform flex items-center justify-center">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-red-500 animate-pulse">
+                  <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3 0-1.07.73-2.73 2-3.33 0 1.1 1.08 1.58 1.5 2.67.33.89.5 1.5.5 2.17 0 2.1-1.79 3.5-3.5 3.5-1.84 0-3.5-1.63-3.5-3.5 0-1.23.35-2.26 1-3.1 0 1.5 1.5 2 2 3.5z"/>
+                  <path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3-4-4-6.5c-.66 1.9-2 4.5-1 7 0 2-3 3-3 6a6 6 0 0 0 4 6z"/>
+                </svg>
               </span>
               <span className="font-medium tracking-wide">{bot.name}</span>
             </button>
@@ -359,64 +419,81 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
         </div>
       )}
 
-      {hasDrawnThisTurn && <div className="flex-1" />}
+      <DroppableDiscardArea isMyTurn={isMyTurn} hasDrawnThisTurn={hasDrawnThisTurn} />
 
       {/* 5.3 Main Compact Quick Actions (Horizontal, Clean SVG Icons) */}
-      <div className="px-6 py-2 w-full max-w-md mx-auto min-h-[60px] flex items-center justify-center">
-        {selectedCardIds.length >= 3 ? (
-          /* MELD KARTU BUTTON (GLOWING EMERALD!) - MAGNIFICENT FULL WIDTH */
+      <div className="px-6 py-2 w-full max-w-md mx-auto min-h-[60px] flex items-center justify-center gap-3">
+        {/* BUTTON TURUNKAN (MELD) - ONLY ICON */}
+        {selectedCardIds.length >= 3 && (
           <button
-            onClick={async () => {
-              if (!isMyTurn) {
-                setToastMsg("Harap tunggu GILIRAN Anda untuk menurunkan kartu! ⚠️");
-                setTimeout(() => setToastMsg(null), 2500);
-                return;
-              }
-
+            onClick={async (e) => {
+              e.stopPropagation(); // Mencegah deselect dari root onClick
               const success = await meldSelectedCards(selectedCardIds);
               if (success) {
                 setSelectedCardIds([]); // Auto reset on success
               }
             }}
-            className="w-full py-3 rounded-xl font-black text-[11px] uppercase tracking-[0.2em] bg-emerald-950/45 text-emerald-400 border border-emerald-800/60 hover:bg-emerald-900/30 shadow-[0_0_25px_rgba(16,185,129,0.15)] transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-[0.97] animate-fade-in"
+            className="w-14 h-14 rounded-2xl bg-emerald-950/45 text-emerald-400 border border-emerald-800/60 hover:bg-emerald-900/30 shadow-[0_0_25px_rgba(16,185,129,0.15)] transition-all flex items-center justify-center cursor-pointer active:scale-90 animate-fade-in"
+            title={`Turunkan ${selectedCardIds.length} Kartu`}
           >
-            <span className="animate-pulse text-[12px]">✦</span>
-            <span>Turunkan ({selectedCardIds.length})</span>
-            <span className="animate-pulse text-[12px]">✦</span>
-          </button>
-        ) : hasDrawnThisTurn ? (
-          /* DISCARD SELECTION (WARNING RED) - ONLY VISIBLE POST-DRAW, MAJESTIC FULL WIDTH */
-          <button
-            disabled={selectedCardIds.length !== 1}
-            onClick={() => {
-              if (selectedCardIds.length === 1) {
-                const targetId = selectedCardIds[0];
-                discardSelected(targetId);
-                setSelectedCardIds([]); // Reset seleksi secara instan demi kenyamanan!
-              }
-            }}
-            className={`w-full py-3 rounded-xl font-bold text-[11px] uppercase tracking-[0.2em] transition-all border flex items-center justify-center gap-2 animate-fade-in ${
-              selectedCardIds.length === 1
-                ? "bg-red-950/35 text-red-400 border-red-900/60 hover:bg-red-950/50 cursor-pointer active:scale-[0.97]"
-                : "bg-zinc-950/40 border-zinc-900/40 text-zinc-600 cursor-not-allowed shadow-none opacity-50"
-            }`}
-          >
-            <svg
-              className="w-4 h-4"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <polyline points="17 8 12 3 7 8" />
-              <line x1="12" y1="3" x2="12" y2="15" />
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 5v14M19 12l-7 7-7-7"/>
             </svg>
-            <span>Buang</span>
           </button>
-        ) : null}
+        )}
+
+        {/* ACTION BUTTONS (DISCARD / CLOSE) - ONLY 1 CARD SELECTED */}
+        {selectedCardIds.length === 1 && (
+          (() => {
+            const selectedCard = playerHand.find(c => c.id === selectedCardIds[0]);
+            const isClosingCondition = playerHand.length === 1;
+            const canShowDiscard = (isMyTurn && hasDrawnThisTurn) || isClosingCondition;
+
+            if (!canShowDiscard || !selectedCard) return null;
+
+            return (
+              <div className="flex gap-4 animate-fade-in">
+                {/* TRASH ICON (BUANG) - DIRECT ACTION */}
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    const cardId = selectedCard.id;
+                    setSelectedCardIds([]); // Reset selection
+                    await discardSelected(cardId);
+                  }}
+                  className="w-14 h-14 rounded-2xl bg-zinc-900/60 border border-zinc-800 hover:border-emerald-500/50 hover:bg-zinc-800/80 flex items-center justify-center transition-all cursor-pointer shadow-lg active:scale-90"
+                  title="Buang Kartu"
+                >
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 6h18m-2 0v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6m3 0V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2M10 11v6M14 11v6"/>
+                  </svg>
+                </button>
+
+                {/* TROPHY ICON (TUTUP) - DIRECT ACTION */}
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    if (isClosingCondition) {
+                      const cardId = selectedCard.id;
+                      setSelectedCardIds([]); // Reset selection
+                      await discardSelected(cardId);
+                    }
+                  }}
+                  className={`w-14 h-14 rounded-2xl border flex items-center justify-center transition-all shadow-lg ${
+                    isClosingCondition 
+                      ? "bg-amber-950/40 border-amber-500/50 hover:bg-amber-900/60 cursor-pointer active:scale-90 shadow-amber-500/10" 
+                      : "bg-zinc-950/40 border-zinc-900 cursor-not-allowed opacity-20 grayscale"
+                  }`}
+                  title={isClosingCondition ? "Tutup Permainan" : "Sisa Kartu > 1"}
+                >
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={isClosingCondition ? "#f59e0b" : "#444"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.66V17M14 14.66V17M18 2h-12v11a6 6 0 0 0 12 0V2zM12 17v5"/>
+                  </svg>
+                </button>
+              </div>
+            );
+          })()
+        )}
       </div>
 
       {/* Minimal Action Guidance */}
@@ -474,7 +551,11 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
                     <span className={`text-[6.5px] leading-none mt-0.5 ${
                       c.suit === "hearts" || c.suit === "diamonds" ? "text-red-600" : "text-zinc-950"
                     }`}>
-                      {c.suit === "hearts" ? "♥" : c.suit === "diamonds" ? "♦" : c.suit === "clubs" ? "♣" : "♠"}
+                      {c.suit === "hearts" ? "♥" : c.suit === "diamonds" ? "♦" : c.suit === "clubs" ? "♣" : c.suit === "spades" ? "♠" : (
+                        <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor" className="text-amber-500">
+                          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                        </svg>
+                      )}
                     </span>
                   </div>
                 ))}
@@ -485,37 +566,37 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
       )}
 
       {/* 5.4 Clean Grid Hand Area (Fluid Drag & Drop Sortable) */}
-      <div className="w-full flex-1 min-h-[220px] px-6 pb-6 overflow-y-auto select-none flex flex-col justify-center">
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragEnd={handleDragEnd}
+      <div 
+        className="w-full flex-1 min-h-[220px] px-6 pb-6 overflow-y-auto select-none flex flex-col justify-center"
+      >
+        <SortableContext
+          items={playerHand.map((c) => c.id)}
+          strategy={rectSortingStrategy}
         >
-          <SortableContext
-            items={playerHand.map((c) => c.id)}
-            strategy={rectSortingStrategy}
-          >
-            <div className="flex flex-wrap justify-center gap-x-2.5 gap-y-4 max-w-xl mx-auto py-2">
-              {playerHand.map((card) => (
+          <div className="flex flex-wrap justify-center gap-x-2.5 gap-y-4 max-w-xl mx-auto py-2">
+            {playerHand.map((card) => (
+              // stopPropagation di sini agar klik pada kartu tidak naik ke root dan membatalkan seleksi
+              <div key={card.id} onClick={(e) => e.stopPropagation()}>
                 <SortableCardWrapper
-                  key={card.id}
                   id={card.id}
                   suit={card.suit}
                   value={card.value}
                   isSelected={selectedCardIds.includes(card.id)}
                   hasDrawnThisTurn={hasDrawnThisTurn}
                   onClick={() => {
-                    setSelectedCardIds((prev) =>
-                      prev.includes(card.id)
-                        ? prev.filter((id) => id !== card.id)
-                        : [...prev, card.id]
-                    );
+                    // Tap kartu sekarang HANYA untuk pilih/deselect (glow)
+                    // Agar tidak bentrok dengan modal buang saat ingin menurunkan kartu
+                    if (selectedCardIds.includes(card.id)) {
+                      setSelectedCardIds((prev) => prev.filter((id) => id !== card.id));
+                    } else {
+                      setSelectedCardIds((prev) => [...prev, card.id]);
+                    }
                   }}
                 />
-              ))}
-            </div>
-          </SortableContext>
-        </DndContext>
+              </div>
+            ))}
+          </div>
+        </SortableContext>
       </div>
 
       {/* ELEGANT MICRO CONFIRMATION MODAL OVERLAY */}
@@ -556,7 +637,11 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
                   {confirmState.card.suit === "hearts" ? "♥" : 
                    confirmState.card.suit === "diamonds" ? "♦" : 
                    confirmState.card.suit === "clubs" ? "♣" : 
-                   confirmState.card.suit === "spades" ? "♠" : "🃏"}
+                   confirmState.card.suit === "spades" ? "♠" : (
+                     <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" className="text-amber-500">
+                       <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                     </svg>
+                   )}
                 </span>
               </div>
             </div>
@@ -588,7 +673,167 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* ════════════════════════════════════════════════════════ */}
+      {/* CARD-SHAPED ACTION OVERLAY — Glassmorphism Style        */}
+      {/* ════════════════════════════════════════════════════════ */}
+      {discardOverlayCard && (() => {
+        const canClose = playerHand.length === 1;
+        const suitSymbol = discardOverlayCard.suit === "hearts" ? "♥" :
+                           discardOverlayCard.suit === "diamonds" ? "♦" :
+                           discardOverlayCard.suit === "clubs" ? "♣" : 
+                           discardOverlayCard.suit === "spades" ? "♠" : (
+                             <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="text-amber-500 inline-block mb-0.5">
+                               <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                             </svg>
+                           );
+        const isRed = discardOverlayCard.suit === "hearts" || discardOverlayCard.suit === "diamonds";
+
+        const handleAction = (e: React.MouseEvent) => {
+          e.stopPropagation();
+          const cardId = discardOverlayCard.id;
+          setDiscardOverlayCard(null);
+          discardSelected(cardId).then(() => setSelectedCardIds([]));
+        };
+
+        return (
+          <div
+            onClick={() => setDiscardOverlayCard(null)}
+            className="fixed inset-0 z-[99998] flex items-center justify-center animate-fade-in"
+          >
+            <style dangerouslySetInnerHTML={{ __html: `
+              @keyframes dualCardPop {
+                0%   { transform: scale(0.5) translateY(40px); opacity: 0; filter: blur(8px); }
+                65%  { transform: scale(1.05) translateY(-5px); opacity: 1; filter: blur(0); }
+                100% { transform: scale(1) translateY(0); opacity: 1; }
+              }
+              @keyframes dualCardPopRight {
+                0%   { transform: scale(0.5) translateY(40px) rotate(4deg); opacity: 0; filter: blur(8px); }
+                65%  { transform: scale(1.05) translateY(-5px) rotate(-1deg); opacity: 1; filter: blur(0); }
+                100% { transform: scale(1) translateY(0) rotate(0deg); opacity: 1; }
+              }
+              @keyframes glowGreen {
+                0%,100% { box-shadow: 0 0 20px rgba(16,185,129,0.25), inset 0 0 20px rgba(16,185,129,0.06); }
+                50%     { box-shadow: 0 0 40px rgba(16,185,129,0.5), inset 0 0 40px rgba(16,185,129,0.12); }
+              }
+              @keyframes glowGold {
+                0%,100% { box-shadow: 0 0 20px rgba(212,175,55,0.3), inset 0 0 20px rgba(212,175,55,0.08); }
+                50%     { box-shadow: 0 0 50px rgba(212,175,55,0.65), inset 0 0 50px rgba(212,175,55,0.18); }
+              }
+              .anim-left  { animation: dualCardPop 0.4s cubic-bezier(0.34,1.56,0.64,1) forwards; opacity: 0; }
+            `}} />
+
+            {/* Backdrop */}
+            <div className="absolute inset-0 bg-black/65 backdrop-blur-md" />
+
+            {/* Layout: card preview atas, dua pilihan bawah */}
+            <div className="relative z-10 flex flex-col items-center gap-5">
+
+              {/* Preview kartu yang dipilih */}
+              <div
+                className="anim-left"
+                style={{ width: 56, height: 84 }}
+              >
+                <div className={`w-full h-full rounded-xl bg-white border-2 flex flex-col justify-between p-1.5 shadow-2xl ${isRed ? "border-red-300" : "border-zinc-300"}`}>
+                  <div className={`flex flex-col items-center leading-none ${isRed ? "text-red-500" : "text-zinc-900"}`}>
+                    <span className="text-[11px] font-bold">{discardOverlayCard.value}</span>
+                    <span className="text-[9px] -mt-0.5">{suitSymbol}</span>
+                  </div>
+                  <div className={`self-end flex flex-col items-center leading-none rotate-180 ${isRed ? "text-red-500" : "text-zinc-900"}`}>
+                    <span className="text-[11px] font-bold">{discardOverlayCard.value}</span>
+                    <span className="text-[9px] -mt-0.5">{suitSymbol}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Dua kartu aksi berdampingan */}
+              <div className="flex gap-4 items-center">
+
+                {/* ── BUANG (kiri, selalu aktif) ── */}
+                <div
+                  onClick={handleAction}
+                  className="relative flex flex-col items-center justify-center gap-3 select-none active:scale-95 transition-transform cursor-pointer"
+                  style={{
+                    width: 130,
+                    height: 180,
+                    // Gabungkan pop + glow dalam satu property animation
+                    animation: "dualCardPop 0.4s cubic-bezier(0.34,1.56,0.64,1) forwards, glowGreen 1.8s ease-in-out 0.4s infinite",
+                    opacity: 0,
+                    background: "rgba(3, 18, 10, 0.88)",
+                    border: "1.5px solid rgba(16,185,129,0.4)",
+                    backdropFilter: "blur(16px)",
+                    WebkitBackdropFilter: "blur(16px)",
+                    borderRadius: 22,
+                  }}
+                >
+                  <div className="absolute top-0 left-5 right-5 h-[1.5px] rounded-full" style={{ background: "linear-gradient(90deg, transparent, rgba(16,185,129,0.7), transparent)" }} />
+                  <span className="text-base font-black font-mono tracking-[0.2em] uppercase" style={{ color: "#10b981" }}>BUANG</span>
+                  <span style={{ color: "#10b981" }}>
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 5v14M19 12l-7 7-7-7"/>
+                    </svg>
+                  </span>
+                  <span className="text-[10px] font-mono text-center px-2" style={{ color: "rgba(16,185,129,0.6)" }}>
+                    {discardOverlayCard.value} {suitSymbol}
+                  </span>
+                  <div className="absolute bottom-0 left-5 right-5 h-[1.5px] rounded-full" style={{ background: "linear-gradient(90deg, transparent, rgba(16,185,129,0.4), transparent)" }} />
+                </div>
+
+                {/* ── TUTUP (kanan, hanya aktif jika sisa 1 kartu) ── */}
+                <div
+                  onClick={canClose ? handleAction : (e) => e.stopPropagation()}
+                  className={`relative flex flex-col items-center justify-center gap-3 select-none transition-transform ${canClose ? "active:scale-95 cursor-pointer" : "cursor-not-allowed opacity-40"}`}
+                  style={{
+                    width: 130,
+                    height: 180,
+                    // Gabungkan pop + glow dalam satu property animation (glow hanya jika canClose)
+                    animation: canClose
+                      ? "dualCardPopRight 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.07s forwards, glowGold 1.6s ease-in-out 0.47s infinite"
+                      : "dualCardPopRight 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.07s forwards",
+                    opacity: 0,
+                    background: canClose ? "rgba(20, 12, 0, 0.88)" : "rgba(10,10,10,0.7)",
+                    border: canClose ? "1.5px solid rgba(212,175,55,0.5)" : "1.5px solid rgba(80,60,0,0.3)",
+                    backdropFilter: "blur(16px)",
+                    WebkitBackdropFilter: "blur(16px)",
+                    borderRadius: 22,
+                  }}
+                >
+                  <div className="absolute top-0 left-5 right-5 h-[1.5px] rounded-full" style={{ background: canClose ? "linear-gradient(90deg, transparent, rgba(212,175,55,0.7), transparent)" : "none" }} />
+                  <span className="text-base font-black font-mono tracking-[0.2em] uppercase" style={{ color: canClose ? "#d4af37" : "#4a3800" }}>TUTUP</span>
+                  <span style={{ lineHeight: 1 }}>
+                    {canClose ? (
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#d4af37" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.66V17M14 14.66V17M18 2h-12v11a6 6 0 0 0 12 0V2zM12 17v5"/>
+                      </svg>
+                    ) : (
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4a3800" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                      </svg>
+                    )}
+                  </span>
+                  <span className="text-[10px] font-mono text-center px-2 leading-tight" style={{ color: canClose ? "rgba(212,175,55,0.65)" : "rgba(80,60,0,0.6)" }}>
+                    {canClose ? "Tutup\nPermainan" : "Sisa > 1\nKartu"}
+                  </span>
+                  <div className="absolute bottom-0 left-5 right-5 h-[1.5px] rounded-full" style={{ background: canClose ? "linear-gradient(90deg, transparent, rgba(212,175,55,0.4), transparent)" : "none" }} />
+                </div>
+
+              </div>
+
+              {/* Hint */}
+              <span className="text-[10px] font-mono text-zinc-600 tracking-widest uppercase">
+                Ketuk di luar untuk batal
+              </span>
+            </div>
+          </div>
+        );
+      })()}
+
+
+
       {/* HIGH-FIDELITY FULLSCREEN CARD REVEAL OVERLAY */}
+
+
       {revealCard && (
         <div 
           onClick={(e) => {
@@ -628,10 +873,14 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
               <span className={`text-4xl leading-none mt-4 ${
                 revealCard.suit === "hearts" || revealCard.suit === "diamonds" ? "text-red-600" : "text-zinc-950"
               }`}>
-                {revealCard.suit === "hearts" ? "♥" : 
-                 revealCard.suit === "diamonds" ? "♦" : 
-                 revealCard.suit === "clubs" ? "♣" : 
-                 revealCard.suit === "spades" ? "♠" : "🃏"}
+                    {revealCard.suit === "hearts" ? "♥" : 
+                     revealCard.suit === "diamonds" ? "♦" : 
+                     revealCard.suit === "clubs" ? "♣" : 
+                     revealCard.suit === "spades" ? "♠" : (
+                       <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor" className="text-amber-500">
+                         <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                       </svg>
+                     )}
               </span>
             </div>
           </div>
@@ -643,59 +892,8 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
         </div>
       )}
 
-      {/* ======================================================= */}
-      {/* STUNNING RANDOM STARTER WELCOME OVERLAY                 */}
-      {/* ======================================================= */}
-      {showIntroModal && discardPile.length === 0 && (
-        <div 
-          className="fixed inset-0 z-[99999] bg-black/90 backdrop-blur-md flex items-center justify-center p-5 animate-fade-in select-none"
-        >
-          {/* Premium Body */}
-          <div className="w-full max-w-[310px] bg-[#031611]/95 border border-emerald-500/30 rounded-2xl shadow-[0_0_50px_rgba(16,185,129,0.25)] p-6 flex flex-col items-center text-center relative overflow-hidden animate-scale-up">
-            {/* Top Emerald Ambient Sweep */}
-            <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-emerald-500 to-transparent" />
-            <div className="absolute -top-20 w-40 h-40 bg-emerald-500/10 rounded-full blur-3xl" />
-
-            {/* Floating Card Icon Crown */}
-            <div className="w-16 h-16 rounded-full bg-[#042118]/80 border border-emerald-500/30 flex items-center justify-center shadow-inner shadow-emerald-500/20 mb-4 relative animate-pulse">
-              <span className="text-3xl">🃏</span>
-              <div className="absolute -top-1.5 -right-1.5 bg-emerald-500 text-black font-mono text-[8px] font-black px-1.5 py-0.5 rounded-full shadow-lg">8</div>
-            </div>
-
-            {/* Typography */}
-            <span className="text-[9px] font-mono font-extrabold text-emerald-400 uppercase tracking-[0.35em] mb-2">
-              Pertandingan Dimulai
-            </span>
-            
-            <h2 className="text-sm font-bold uppercase text-zinc-100 tracking-wider leading-tight mb-3">
-              Pemain Pertama Terpilih!
-            </h2>
-            
-            <div className="w-full bg-[#06261c]/60 border border-emerald-900/40 rounded-xl p-3 mb-5">
-              <span className="block text-[8px] font-mono text-emerald-500/60 uppercase tracking-widest mb-1">GILIRAN MEMBUANG:</span>
-              <span className="block text-lg font-black text-zinc-100 uppercase tracking-widest drop-shadow-[0_0_10px_rgba(255,255,255,0.2)]">
-                {isMyTurn ? "👉 ANDA 👈" : activePlayerName}
-              </span>
-            </div>
-
-            <p className="text-[9px] font-mono text-zinc-400 leading-relaxed tracking-wide mb-6 uppercase">
-              {isMyTurn 
-                ? "Anda mendapat 8 kartu awal! Silakan pilih & buang 1 kartu untuk memulai."
-                : `${activePlayerName} memegang 8 kartu awal & bertugas membuang kartu pertama.`
-              }
-            </p>
-
-            {/* Action Cta */}
-            <button
-              onClick={() => setShowIntroModal(false)}
-              className="w-full py-2.5 bg-emerald-500 border border-emerald-400 text-black rounded-xl text-[10px] font-black font-mono tracking-widest uppercase transition-all active:scale-95 cursor-pointer hover:bg-emerald-400 shadow-[0_5px_20px_rgba(16,185,129,0.3)] flex items-center justify-center gap-1.5"
-            >
-              <span>Siap Tempur</span>
-              <span className="text-xs">🔥</span>
-            </button>
-          </div>
-        </div>
-      )}
+      {/* ELIMINATED REDUNDANT INTRO MODAL TO PREVENT UI FLICKERING */}
+      </DndContext>
     </div>
   );
 };

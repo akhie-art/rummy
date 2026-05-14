@@ -76,7 +76,7 @@ export const getCardNumericValue = (value: CardValue): number => {
 // 4. Joker (Wildcard) = 20 points (standard penalty high-tier value)
 export const getCardPoints = (card: Card): number => {
   if (card.value === "A") return 15;
-  if (card.value === "JKR" || card.suit === "joker") return 20;
+  if (card.value === "JKR" || card.suit === "joker") return 20; // fallback standalone value
   
   const numVal = getCardNumericValue(card.value);
   if (numVal >= 2 && numVal <= 10) return 5;
@@ -84,6 +84,70 @@ export const getCardPoints = (card: Card): number => {
   
   return 0;
 };
+
+// ── JOKER CONTEXTUAL POINTS ──────────────────────────────────────────────────
+// Returns Joker point value based on what card it replaces inside a meld group.
+// Rules:
+//   - Joker as number card (2–10)  → 5 points
+//   - Joker as face card (J, Q, K) → 10 points
+//   - Joker as Ace (As)            → 15 points
+export const getJokerContextPoints = (group: Card[]): number => {
+  const nonJokers = group.filter(c => c.suit !== "joker" && c.value !== "JKR");
+  if (nonJokers.length === 0) return 5; // all-joker edge case
+
+  // ── SET: all non-jokers have same value ──
+  const firstValue = nonJokers[0].value;
+  const isAllSameValue = nonJokers.every(c => c.value === firstValue);
+  if (isAllSameValue) {
+    // Joker fills the same slot as the repeated value
+    if (firstValue === "A") return 15;
+    const n = getCardNumericValue(firstValue);
+    if (n >= 11 && n <= 13) return 10;
+    return 5;
+  }
+
+  // ── RUN: sequential values ──
+  // Determine if the non-joker cards belong to the numeric group (2–10) or royal group (J,Q,K)
+  const numericValues = nonJokers.map(c => getCardNumericValue(c.value));
+  const isAllNumeric = numericValues.every(v => v >= 2 && v <= 10);
+  const isAllRoyal   = numericValues.every(v => v >= 11 && v <= 13);
+
+  if (isAllNumeric) {
+    // Find the missing slot in the sorted sequence
+    numericValues.sort((a, b) => a - b);
+    const jokerCount = group.length - nonJokers.length;
+    // Build expected sequence starting from min
+    const allExpected: number[] = [];
+    for (let i = numericValues[0]; allExpected.length < group.length; i++) {
+      allExpected.push(i);
+    }
+    const missingVals = allExpected.filter(v => !numericValues.includes(v));
+    // The missing value(s) are what the joker(s) replace — they're all in 2–10 range
+    const replacedVal = missingVals[0] ?? numericValues[0];
+    if (replacedVal >= 2 && replacedVal <= 10) return 5;
+    if (replacedVal >= 11 && replacedVal <= 13) return 10;
+    return 5;
+  }
+
+  if (isAllRoyal) return 10; // Joker fills J, Q, or K slot → 10
+
+  // Mixed / edge case fallback
+  return 5;
+};
+
+// ── MELD TOTAL POINTS (context-aware Joker) ───────────────────────────────────
+// Use this instead of summing getCardPoints() for meld groups,
+// so Joker gets the correct contextual value instead of the flat 20-pt penalty.
+export const getMeldPoints = (group: Card[]): number => {
+  const jokerPoints = getJokerContextPoints(group);
+  return group.reduce((sum, card) => {
+    if (card.suit === "joker" || card.value === "JKR") {
+      return sum + jokerPoints;
+    }
+    return sum + getCardPoints(card);
+  }, 0);
+};
+
 
 
 // Sort a player's hand by Suit first, then Value
@@ -199,34 +263,33 @@ export const hasAnyExistingRun = (cards: Card[]): boolean => {
 // Uses O(N^2) hand pair analysis to seamlessly support Jokers, boundaries, 
 // and enforces the strict No-Middle-Catch condition.
 export const canDrawDiscardCard = (targetCard: Card, hand: Card[]): boolean => {
-  if (hand.length < 2) return false;
+  return getAutomaticDiscardMeldCards(targetCard, hand) !== null;
+};
 
-  // Iterate through every unique pair in hand to see if they form a valid meld with targetCard
-  for (let i = 0; i < hand.length; i++) {
-    for (let j = i + 1; j < hand.length; j++) {
-      const c1 = hand[i];
-      const c2 = hand[j];
+// Helper to find which cards in hand actually form the meld with a drawn discard
+export const getAutomaticDiscardMeldCards = (targetCard: Card, hand: Card[]): Card[] | null => {
+  if (hand.length < 2) return null;
+
+  // We sort the hand first to make the selection predictable (preferring neighbors)
+  const sortedHand = sortHand(hand);
+
+  for (let i = 0; i < sortedHand.length; i++) {
+    for (let j = i + 1; j < sortedHand.length; j++) {
+      const c1 = sortedHand[i];
+      const c2 = sortedHand[j];
       
-      // 1. CHECK SET (KARTU SAMA) WITH THIS PAIR
+      // 1. CHECK SET (MUST HAVE EXISTING RUN)
       if (isSet([c1, c2, targetCard])) {
-        // Syarat Indonesia Remi: Untuk mengambil Set (kartu sama), pemain wajib
-        // sudah memiliki minimal SATU Seri (Urutan/Run) terpisah di sisa tangannya!
-        const remainingHand = hand.filter(c => c.id !== c1.id && c.id !== c2.id);
+        const remainingHand = sortedHand.filter(c => c.id !== c1.id && c.id !== c2.id);
         if (hasAnyExistingRun(remainingHand)) {
-          return true;
+          return [c1, c2];
         }
       }
       
-      // 2. CHECK RUN (URUTAN SERI) WITH THIS PAIR
+      // 2. CHECK RUN
       if (isRun([c1, c2, targetCard])) {
-        
-        // If target is Joker itself, it can represent anything, thus it's an allowed draw!
-        if (targetCard.suit === "joker") {
-          return true;
-        }
+        if (targetCard.suit === "joker") return [c1, c2];
 
-        // Enforce strict "No Middle Catch":
-        // Target card must be physically able to represent either end of a valid 3-card sequence
         const T = getCardNumericValue(targetCard.value);
         const normalValues = [c1, c2, targetCard]
           .filter(c => c.suit !== "joker")
@@ -235,26 +298,20 @@ export const canDrawDiscardCard = (targetCard: Card, hand: Card[]): boolean => {
         const minVal = Math.min(...normalValues);
         const maxVal = Math.max(...normalValues);
         const isAllNumeric = normalValues.every(v => v >= 2 && v <= 10);
-        
         const boundMin = isAllNumeric ? 2 : 11;
         const boundMax = isAllNumeric ? 10 : 13;
 
-        // Check valid sequence intervals [S, S+1, S+2]
         for (let S = boundMin; S <= boundMax - 2; S++) {
           const endVal = S + 2;
-          
-          // If this configuration covers our cards
           if (S <= minVal && endVal >= maxVal) {
-            // Target card MUST occupy either the START or the END of this 3-card Run
             if (T === S || T === endVal) {
-              return true;
+              return [c1, c2];
             }
           }
         }
       }
     }
   }
-
-  return false;
+  return null;
 };
 

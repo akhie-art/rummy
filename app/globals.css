@@ -95,4 +95,41 @@ body {
   animation: fiery-bloom 2.2s cubic-bezier(0.25, 1, 0.5, 1) forwards;
 }
 
+/* Dealing & Modal Animations */
+@keyframes deal-card {
+  0% {
+    transform: translate(-50%, -50%) rotate(0deg) scale(1);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(calc(-50% + var(--target-x)), calc(-50% + var(--target-y))) rotate(var(--target-rotate)) scale(0.5);
+    opacity: 0;
+  }
+}
+
+.animate-deal-card {
+  animation: deal-card 1.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes scale-up {
+  0% { transform: scale(0.9); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.animate-scale-up {
+  animation: scale-up 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+@keyframes fade-in {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out forwards;
+}
+
 

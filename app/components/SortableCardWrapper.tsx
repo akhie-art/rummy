@@ -48,7 +48,12 @@ export default function SortableCardWrapper({
   return (
     <div
       ref={setNodeRef}
-      style={style}
+      style={{
+        ...style,
+        width: "64px",
+        height: "96px",
+        flexShrink: 0,
+      }}
       {...attributes}
       {...listeners}
       className="relative select-none"
@@ -57,8 +62,8 @@ export default function SortableCardWrapper({
         suit={suit}
         value={value}
         isSelected={isSelected}
-        onClick={onClick} // This handles tap activation if drag doesn't trigger
-        className={`w-16 h-24 sm:w-20 sm:h-30 shadow-xl rounded-xl border-2 ${
+        onClick={onClick}
+        className={`!w-16 !h-24 shadow-xl rounded-xl border-2 ${
           isDragging ? "scale-105 rotate-3 cursor-grabbing shadow-gold/20" : "cursor-grab"
         } ${isSelected ? "border-gold shadow-gold/40 scale-105" : "border-zinc-300"}`}
       />
