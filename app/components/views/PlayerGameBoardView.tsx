@@ -165,8 +165,7 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
     }),
     useSensor(TouchSensor, {
       activationConstraint: {
-        delay: 250,
-        tolerance: 5,
+        distance: 5, // Instantly draggable after moving 5px, no long-press needed!
       },
     })
   );
