@@ -978,6 +978,13 @@ export default function Home() {
     const targetCard = playerHand.find(c => c.id === cardId);
     if (!targetCard) return;
 
+    // Rule: Joker (JKR) strictly cannot be discarded!
+    if (targetCard.value === "JKR" || targetCard.suit === "joker") {
+      setToastMsg("❌ KARTU JOKER TIDAK BOLEH DIBUANG!");
+      setTimeout(() => setToastMsg(null), 2500);
+      return;
+    }
+
     const cardWithAttribution = { ...targetCard, thrownBy: playerName || "Pemain" };
     const updatedHand = playerHand.filter(c => c.id !== cardId);
     const updatedDiscard = [cardWithAttribution, ...discardPile];
