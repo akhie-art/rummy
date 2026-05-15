@@ -66,7 +66,14 @@ export default function Home() {
       if (prev.length !== newState.players.length) return newState.players;
       const hasChanges = prev.some((p, i) => {
         const sP = newState.players[i];
-        return p.name !== sP.name || p.hand.length !== sP.hand.length || p.score !== sP.score || p.hasDrawn !== sP.hasDrawn;
+        return (
+          p.name !== sP.name || 
+          p.hand.length !== sP.hand.length || 
+          p.score !== sP.score || 
+          p.hasDrawn !== sP.hasDrawn ||
+          p.last_voice_taunt_at !== sP.last_voice_taunt_at ||
+          p.isDoneShowdown !== sP.isDoneShowdown
+        );
       });
       return hasChanges ? newState.players : prev;
     });
