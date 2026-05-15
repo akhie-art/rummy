@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import SortableCardWrapper from "../SortableCardWrapper";
-import { Card } from "../../utils/gameLogic";
+import { Card, isSet, isRun, getPlayerRank } from "../../utils/gameLogic";
 import { ViewState } from "../../types/game";
 
 // Drag and drop sorting imports
@@ -52,6 +52,10 @@ interface PlayerGameBoardViewProps {
   remotePlayers: any[];
   turnIndex: number;
   playerName: string;
+  sendReaction: (emoji: string) => Promise<void>;
+  sendVoiceTaunt: () => Promise<void>;
+  myVoiceTaunt?: string;
+  tableThemeClass?: string;
 }
 
 const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
@@ -84,6 +88,10 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
   remotePlayers,
   turnIndex,
   playerName,
+  sendReaction,
+  sendVoiceTaunt,
+  myVoiceTaunt,
+  tableThemeClass,
 }) => {
   const isShowdown = gameStatus === "showdown";
   const circularDiscards = [...discardPile].reverse(); // Render from oldest to newest (left-to-right)
@@ -153,8 +161,32 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
     lastSeenPlayersHands.current = nextHands;
   }, [discardPile, remotePlayers, turnIndex]);
 
+  // --- VOICE TAUNT PLAYBACK SYSTEM ---
+  const lastTauntTimestamps = React.useRef<{ [name: string]: number }>({});
+  
+  React.useEffect(() => {
+    remotePlayers.forEach(p => {
+      const lastTs = lastTauntTimestamps.current[p.name] || 0;
+      if (p.last_voice_taunt_at && p.last_voice_taunt_at > lastTs) {
+        // Play taunt!
+        if (p.voice_taunt) {
+          const audio = new Audio(p.voice_taunt);
+          audio.play().catch(e => console.log("Auto-play blocked or failed:", e));
+        }
+        lastTauntTimestamps.current[p.name] = p.last_voice_taunt_at;
+      }
+    });
+  }, [remotePlayers]);
+
   // --- OPPONENT MELD MODAL ---
   const [viewingOpponent, setViewingOpponent] = useState<any | null>(null);
+
+  // --- QUICK CHAT REMOVED (MOVED TO SOCIAL DECK) ---
+  const [showQuickChat, setShowQuickChat] = useState(false);
+
+  // Calculate if current selection forms a valid meld (Smart Glow VFX)
+  const selectedCards = playerHand.filter(c => selectedCardIds.includes(c.id));
+  const isValidMeld = selectedCards.length >= 3 && (isSet(selectedCards) || isRun(selectedCards));
 
   // --- DRAG AND DROP SENSORS ---
   const sensors = useSensors(
@@ -182,14 +214,14 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
         <div
           ref={setNodeRef}
           className={`w-full max-w-md py-6 px-4 border-2 border-dashed rounded-2xl flex flex-col items-center justify-center backdrop-blur-sm transition-all duration-500 select-none ${isOver
-              ? "border-red-500 bg-red-950/40 scale-[1.03] shadow-[0_0_30px_rgba(239,68,68,0.25)]"
-              : "border-zinc-800/60 bg-zinc-950/25 hover:border-zinc-700/80 hover:bg-zinc-950/40 shadow-[inset_0_0_15px_rgba(0,0,0,0.4)]"
+            ? "border-red-500 bg-red-950/40 scale-[1.03] shadow-[0_0_30px_rgba(239,68,68,0.25)]"
+            : "border-zinc-800/60 bg-zinc-950/25 hover:border-zinc-700/80 hover:bg-zinc-950/40 shadow-[inset_0_0_15px_rgba(0,0,0,0.4)]"
             }`}
         >
           {/* Refined Trash Icon Circle */}
           <div className={`w-12 h-12 rounded-full mb-3 flex items-center justify-center transition-all duration-500 ${isOver
-              ? "bg-red-500/20 scale-110 border border-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.3)]"
-              : "bg-zinc-900/80 border border-zinc-800 shadow-md"
+            ? "bg-red-500/20 scale-110 border border-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.3)]"
+            : "bg-zinc-900/80 border border-zinc-800 shadow-md"
             }`}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={isOver ? "#ef4444" : "#71717a"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`${isOver ? "animate-bounce" : "opacity-70"}`}>
               <path d="M3 6h18m-2 0v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6m3 0V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2M10 11v6M14 11v6" />
@@ -240,7 +272,7 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
         setSelectedCardIds([]);
         setDiscardOverlayCard(null);
       }}
-      className="fixed inset-0 bg-[#041410] z-50 flex flex-col justify-between select-none animate-fade-in"
+      className={`fixed inset-0 ${tableThemeClass || "bg-[#041410]"} z-50 flex flex-col justify-between select-none animate-fade-in transition-colors duration-1000`}
     >
       <DndContext
         sensors={sensors}
@@ -255,7 +287,7 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
                 className={`w-1.5 h-1.5 rounded-full ${isMyTurn ? "bg-emerald-500 animate-pulse" : "bg-zinc-700"
                   }`}
               />
-              <div>
+              <div className="flex flex-col gap-0.5">
                 <span className="text-[10px] font-medium text-zinc-300 uppercase tracking-[0.2em] block leading-none">
                   {isShowdown ? "Turunkan Sisa Kartu" : (isMyTurn
                     ? hasDrawnThisTurn
@@ -263,9 +295,20 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
                       : "Giliran Anda"
                     : `Giliran: ${activePlayerName}`)}
                 </span>
+                {(() => {
+                  const myData = remotePlayers.find(p => p.name.toUpperCase() === playerName.toUpperCase());
+                  const rank = getPlayerRank(myData?.score || 0);
+                  return (
+                    <span className={`text-[6.5px] font-black uppercase tracking-[0.25em] ${rank.color}`}>
+                      {rank.title}
+                    </span>
+                  );
+                })()}
               </div>
             </div>
           </div>
+
+
 
           {/* BROADCAST TOAST (MODERN SLIM) */}
           {broadcast && (
@@ -323,6 +366,24 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
                   <span className="font-medium tracking-wide">{bot.name}</span>
                 </button>
               ))}
+              
+              {/* My Custom Voice Taunt Trigger */}
+              {myVoiceTaunt && (
+                <button
+                  onClick={sendVoiceTaunt}
+                  className="px-2.5 py-1 rounded-lg border border-emerald-900/40 bg-emerald-950/15 text-[9px] font-mono text-emerald-400 hover:text-emerald-300 flex items-center gap-1.5 cursor-pointer transition-all uppercase active:scale-95 group shadow-[0_0_15px_rgba(16,185,129,0.1)]"
+                  title="Kirim Taunt Suara Anda"
+                >
+                  <span className="group-hover:scale-110 transition-transform flex items-center justify-center">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-pulse">
+                      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                      <line x1="12" y1="19" x2="12" y2="22" />
+                    </svg>
+                  </span>
+                  <span className="font-bold tracking-widest">VOICE TAUNT</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -335,7 +396,7 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
               {["😂", "😮", "😡", "🤡", "🔥", "💩"].map((emoji, idx) => (
                 <button
                   key={idx}
-                  onClick={() => sendChatMessage(emoji, undefined, "All")}
+                  onClick={() => sendReaction(emoji)}
                   className="w-9 h-9 rounded-xl bg-white/5 backdrop-blur-md border border-white/10 flex items-center justify-center text-xl hover:scale-110 active:scale-95 transition-all cursor-pointer hover:bg-white/10 hover:border-white/20 shadow-lg"
                 >
                   {emoji}
@@ -346,194 +407,194 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
         </div>
 
         {/* 5.2 Console: Clickable Dealer Shoe + Scrollable Discard Drawer */}
-        {!hasDrawnThisTurn && (
-          <div className="px-6 pt-4 animate-fade-in flex flex-col">
-            {/* Interactive Section Header */}
-            <div className="flex justify-between items-center mb-2.5">
-              <span className="text-[9px] font-bold font-mono text-zinc-400 uppercase tracking-[0.15em]">
-                Ambil Kartu
-              </span>
-            </div>
+        <div className={`px-6 pt-4 flex flex-col transition-all duration-500 ${hasDrawnThisTurn ? "opacity-75 scale-95" : "animate-fade-in"}`}>
+          {/* Interactive Section Header */}
+          <div className="flex justify-between items-center mb-2.5">
+            <span className="text-[9px] font-bold font-mono text-zinc-400 uppercase tracking-[0.15em]">
+              {hasDrawnThisTurn ? "Tumpukan Kartu" : "Ambil Kartu"}
+            </span>
+          </div>
 
-            {/* TacTile Console Row */}
-            <div className="flex items-center gap-4 pb-2 overflow-visible">
+          {/* TacTile Console Row */}
+          <div className="flex items-center gap-4 pb-2 overflow-visible">
 
-              {/* 1. IMMERSIVE ROTATED DEALER SHOE (TACTILE PLAYER DRAWING) */}
-              <div
-                onClick={async (e) => {
-                  e.stopPropagation(); // Mencegah reset saat mengambil dek
-                  if (isMyTurn && !hasDrawnThisTurn) {
-                    const drawn = await drawFromStock();
-                    if (drawn) {
-                      setRevealCard(drawn);
-                    }
+            {/* 1. IMMERSIVE ROTATED DEALER SHOE (TACTILE PLAYER DRAWING) */}
+            <div
+              onClick={async (e) => {
+                e.stopPropagation(); // Mencegah reset saat mengambil dek
+                if (isMyTurn && !hasDrawnThisTurn) {
+                  const drawn = await drawFromStock();
+                  if (drawn) {
+                    setRevealCard(drawn);
                   }
-                }}
-                className={`flex-shrink-0 relative select-none transition-all duration-300 ${isMyTurn && !hasDrawnThisTurn
-                    ? "cursor-pointer active:scale-[0.96]"
-                    : "opacity-40 cursor-not-allowed"
-                  }`}
-              >
-                <div className={`p-1.5 rounded-xl border ${isMyTurn && !hasDrawnThisTurn
-                    ? "border-zinc-700/40 bg-[#051b15]/95 shadow-[0_10px_30px_rgba(0,0,0,0.7)] ring-1 ring-emerald-950/30"
-                    : "border-zinc-800/50 bg-black/30 shadow-none"
-                  } -rotate-[8deg] backdrop-blur-sm`}>
+                }
+              }}
+              className={`flex-shrink-0 relative select-none transition-all duration-300 ${isMyTurn && !hasDrawnThisTurn
+                ? "cursor-pointer active:scale-[0.96]"
+                : "opacity-40 cursor-not-allowed"
+                }`}
+            >
+              <div className={`p-1.5 rounded-xl border ${isMyTurn && !hasDrawnThisTurn
+                ? "border-zinc-700/40 bg-[#051b15]/95 shadow-[0_10px_30px_rgba(0,0,0,0.7)] ring-1 ring-emerald-950/30"
+                : "border-zinc-800/50 bg-black/30 shadow-none"
+                } -rotate-[8deg] backdrop-blur-sm`}>
 
-                  <div className="text-[6px] font-mono font-black text-zinc-500 uppercase tracking-[0.2em] text-center mb-1 leading-none">
-                    AMBIL DEK
-                  </div>
-
-                  <div className="relative w-12 h-18 rounded-lg bg-zinc-950 border border-zinc-800 shadow-inner flex items-center justify-center overflow-hidden">
-                    <div className="absolute inset-0.5 bg-red-950 border border-red-800/30 rounded-md flex flex-col items-center justify-center p-1 overflow-hidden shadow-md">
-                      {/* Micro Texture */}
-                      <div className="absolute inset-0 opacity-[0.12] bg-[repeating-linear-gradient(45deg,#000,#000_3px,#fff_3px,#fff_6px)]" />
-                      {/* Mini Suit Icons as in Screenshot */}
-                      <div className="relative z-10 flex items-center justify-center gap-0.5 text-[9px] font-bold text-yellow-600/75 select-none">
-                        <span>♠</span><span>♣</span><span>♦</span><span>♥</span>
-                      </div>
-                    </div>
-
-                    {/* Emerald Count */}
-                    <div className={`absolute bottom-1 right-1 z-20 bg-black/80 text-emerald-400 border px-1 rounded font-mono font-black text-[7px] scale-90 shadow-sm ${isMyTurn && !hasDrawnThisTurn ? "border-emerald-900/50" : "border-zinc-800 text-zinc-500"
-                      }`}>
-                      {deckCount}
-                    </div>
-                  </div>
+                <div className="text-[6px] font-mono font-black text-zinc-500 uppercase tracking-[0.2em] text-center mb-1 leading-none">
+                  AMBIL DEK
                 </div>
 
-                {/* Live Attention Glow Pulse */}
-                {isMyTurn && !hasDrawnThisTurn && (
-                  <div className="absolute inset-0 rounded-xl border border-emerald-500/30 animate-pulse pointer-events-none" />
-                )}
+                <div className="relative w-12 h-18 rounded-lg bg-zinc-950 border border-zinc-800 shadow-inner flex items-center justify-center overflow-hidden">
+                  <div className="absolute inset-0.5 bg-red-950 border border-red-800/30 rounded-md flex flex-col items-center justify-center p-1 overflow-hidden shadow-md">
+                    {/* Micro Texture */}
+                    <div className="absolute inset-0 opacity-[0.12] bg-[repeating-linear-gradient(45deg,#000,#000_3px,#fff_3px,#fff_6px)]" />
+                    {/* Mini Suit Icons as in Screenshot */}
+                    <div className="relative z-10 flex items-center justify-center gap-0.5 text-[9px] font-bold text-yellow-600/75 select-none">
+                      <span>♠</span><span>♣</span><span>♦</span><span>♥</span>
+                    </div>
+                  </div>
+
+                  {/* Emerald Count */}
+                  <div className={`absolute bottom-1 right-1 z-20 bg-black/80 text-emerald-400 border px-1 rounded font-mono font-black text-[7px] scale-90 shadow-sm ${isMyTurn && !hasDrawnThisTurn ? "border-emerald-900/50" : "border-zinc-800 text-zinc-500"
+                    }`}>
+                    {deckCount}
+                  </div>
+                </div>
               </div>
 
-              {/* 2. Scrollable Discards */}
-              <div className="flex-1 flex gap-2 overflow-x-auto pb-4 pt-8 px-0.5 snap-x no-scrollbar scrollbar-thin">
-                {circularDiscards.map((card, index) => {
-                  const logicalIndex = (circularDiscards.length - 1) - index;
-                  const isSelected = selectedDiscardIndex === logicalIndex;
+              {/* Live Attention Glow Pulse */}
+              {isMyTurn && !hasDrawnThisTurn && (
+                <div className="absolute inset-0 rounded-xl border border-emerald-500/30 animate-pulse pointer-events-none" />
+              )}
+            </div>
 
-                  // Get visual index of selection to draw tail to the right
-                  const selectedRenderedIndex = selectedDiscardIndex !== null ? (circularDiscards.length - 1) - selectedDiscardIndex : null;
+            {/* 2. Scrollable Discards */}
+            <div className="flex-1 flex gap-2 overflow-x-auto pb-4 pt-8 px-0.5 snap-x no-scrollbar scrollbar-thin">
+              {circularDiscards.map((card, index) => {
+                const logicalIndex = (circularDiscards.length - 1) - index;
+                const isSelected = selectedDiscardIndex === logicalIndex;
 
-                  // 'Tail' cards are the clicked card and all newer cards to its RIGHT (stacking on top of it)
-                  const isPartOfTail = selectedRenderedIndex !== null && index >= selectedRenderedIndex;
-                  const isTailTooLong = selectedDiscardIndex !== null && (selectedDiscardIndex + 1) > 7;
+                // Get visual index of selection to draw tail to the right
+                const selectedRenderedIndex = selectedDiscardIndex !== null ? (circularDiscards.length - 1) - selectedDiscardIndex : null;
 
-                  return (
-                    <div
-                      key={card.id}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (isSelected) {
-                          if (isDiscardSelectionValid && isMyTurn && !hasDrawnThisTurn && !isTailTooLong) {
-                            drawFromDiscardAtIndex(logicalIndex);
-                            setSelectedDiscardIndex(null);
-                          } else {
-                            setSelectedDiscardIndex(null);
-                          }
+                // 'Tail' cards are the clicked card and all newer cards to its RIGHT (stacking on top of it)
+                const isPartOfTail = selectedRenderedIndex !== null && index >= selectedRenderedIndex;
+                const isTailTooLong = selectedDiscardIndex !== null && (selectedDiscardIndex + 1) > 7;
+
+                return (
+                  <div
+                    key={card.id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (hasDrawnThisTurn) return; // HANYA BISA SCROLL SETELAH AMBIL KARTU
+
+                      if (isSelected) {
+                        if (isDiscardSelectionValid && isMyTurn && !hasDrawnThisTurn && !isTailTooLong) {
+                          drawFromDiscardAtIndex(logicalIndex);
+                          setSelectedDiscardIndex(null);
                         } else {
-                          setSelectedDiscardIndex(logicalIndex);
+                          setSelectedDiscardIndex(null);
                         }
-                      }}
-                      className={`flex-shrink-0 relative transition-all duration-500 cursor-pointer snap-start ${isPartOfTail ? "-translate-y-2.5" : ""} ${isSelected ? "scale-[1.05] z-30" : isPartOfTail ? "z-20" : "z-10"
-                        }`}
-                    >
-                      <div className={`relative transition-all duration-300 ${isPartOfTail
-                          ? isTailTooLong
-                            ? "ring-2 ring-red-600/80 shadow-[0_0_15px_rgba(220,38,38,0.4)] rounded-xl scale-[1.02]"
-                            : "ring-2 ring-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.5)] rounded-xl scale-[1.02]"
-                          : ""
+                      } else {
+                        setSelectedDiscardIndex(logicalIndex);
+                      }
+                    }}
+                    className={`flex-shrink-0 relative transition-all duration-500 snap-start ${hasDrawnThisTurn ? "cursor-default" : "cursor-pointer"} ${isPartOfTail ? "-translate-y-2.5" : ""} ${isSelected ? "scale-[1.05] z-30" : isPartOfTail ? "z-20" : "z-10"
+                      }`}
+                  >
+                    <div className={`relative transition-all duration-300 ${isPartOfTail
+                      ? isTailTooLong
+                        ? "ring-2 ring-red-600/80 shadow-[0_0_15px_rgba(220,38,38,0.4)] rounded-xl scale-[1.02]"
+                        : "ring-2 ring-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.5)] rounded-xl scale-[1.02]"
+                      : ""
+                      }`}>
+                      {/* Identity Badge for Tail (Starts at 1 on selection, increases to the right) */}
+                      {isPartOfTail && (
+                        <div className={`absolute -top-3 left-1/2 -translate-x-1/2 z-50 px-2 py-0.5 rounded-full text-[8px] font-black font-mono shadow-lg ${isTailTooLong ? "bg-red-600 text-white" : "bg-amber-400 text-black"
+                          }`}>
+                          {selectedRenderedIndex !== null ? (index - selectedRenderedIndex) + 1 : 0}
+                        </div>
+                      )}
+
+                      <div className={`relative w-13 h-18 md:w-14 md:h-20 rounded-lg border relative flex flex-col items-center justify-center select-none transition-all duration-300 ${isSelected
+                        ? "border-amber-400 bg-white shadow-[0_10px_20px_rgba(0,0,0,0.4)]"
+                        : isPartOfTail
+                          ? isTailTooLong ? "border-red-500 bg-red-100" : "border-amber-500 bg-amber-50"
+                          : "border-zinc-300/80 bg-zinc-200/90 shadow-sm"
                         }`}>
-                        {/* Identity Badge for Tail (Starts at 1 on selection, increases to the right) */}
-                        {isPartOfTail && (
-                          <div className={`absolute -top-3 left-1/2 -translate-x-1/2 z-50 px-2 py-0.5 rounded-full text-[8px] font-black font-mono shadow-lg ${isTailTooLong ? "bg-red-600 text-white" : "bg-amber-400 text-black"
+                        <span
+                          className={`text-base leading-none font-bold ${card.suit === "hearts" || card.suit === "diamonds"
+                            ? "text-red-600"
+                            : "text-zinc-950"
+                            }`}
+                        >
+                          {card.value}
+                        </span>
+                        <span
+                          className={`text-xs leading-none mt-0.5 ${card.suit === "hearts" || card.suit === "diamonds"
+                            ? "text-red-600"
+                            : "text-zinc-950"
+                            }`}
+                        >
+                          {card.suit === "hearts"
+                            ? "♥"
+                            : card.suit === "diamonds"
+                              ? "♦"
+                              : card.suit === "clubs"
+                                ? "♣"
+                                : "♠"}
+                        </span>
+
+                        {/* Sequence Number (Chronological: leftmost is oldest #1, rightmost is newest) */}
+                        <div className="absolute top-0.5 right-1 text-[7.5px] font-black font-mono text-zinc-500">
+                          #{index + 1}
+                        </div>
+
+                        {/* Thrown By Attribution */}
+                        <div className="absolute bottom-0 left-0 right-0 text-center text-[5.5px] font-mono uppercase tracking-[0.05em] font-bold text-zinc-500 truncate px-0.5 border-t border-zinc-200 bg-zinc-200/60 py-0.5 rounded-b-lg">
+                          {card.thrownBy || "Dealer"}
+                        </div>
+
+                        {/* GLASS ACTION OVERLAY: Muncuk ketika kartu diketuk! */}
+                        {isSelected && !hasDrawnThisTurn && (
+                          <div className={`absolute inset-0 z-40 rounded-lg flex flex-col items-center justify-center backdrop-blur-[1.5px] border border-white/20 animate-fade-in transition-all duration-300 ${isDiscardSelectionValid && isMyTurn && !hasDrawnThisTurn && !isTailTooLong
+                            ? "bg-emerald-950/90 shadow-[0_0_15px_rgba(16,185,129,0.35)]"
+                            : "bg-red-950/90 shadow-[0_0_15px_rgba(239,68,68,0.2)]"
                             }`}>
-                            {selectedRenderedIndex !== null ? (index - selectedRenderedIndex) + 1 : 0}
+                            {isDiscardSelectionValid && isMyTurn && !hasDrawnThisTurn && !isTailTooLong ? (
+                              <>
+                                <span className="text-[8px] font-black text-emerald-400 tracking-widest animate-pulse">
+                                  AMBIL
+                                </span>
+                                <svg className="w-3.5 h-3.5 text-emerald-400 animate-bounce mt-0.5" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24">
+                                  <path d="M12 19V5m-7 7l7-7 7 7" />
+                                </svg>
+                              </>
+                            ) : (
+                              <>
+                                <span className="text-[7px] font-black text-red-400 tracking-[0.15em] text-center px-1">
+                                  {isTailTooLong ? "TERLALU BANYAK" : "TIDAK SAH"}
+                                </span>
+                                <svg className="w-3.5 h-3.5 text-red-400 mt-0.5" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24">
+                                  <path d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </>
+                            )}
                           </div>
                         )}
-
-                        <div className={`relative w-13 h-18 md:w-14 md:h-20 rounded-lg border relative flex flex-col items-center justify-center select-none transition-all duration-300 ${isSelected
-                            ? "border-amber-400 bg-white shadow-[0_10px_20px_rgba(0,0,0,0.4)]"
-                            : isPartOfTail
-                              ? isTailTooLong ? "border-red-500 bg-red-100" : "border-amber-500 bg-amber-50"
-                              : "border-zinc-300/80 bg-zinc-200/90 shadow-sm"
-                          }`}>
-                          <span
-                            className={`text-base leading-none font-bold ${card.suit === "hearts" || card.suit === "diamonds"
-                                ? "text-red-600"
-                                : "text-zinc-950"
-                              }`}
-                          >
-                            {card.value}
-                          </span>
-                          <span
-                            className={`text-xs leading-none mt-0.5 ${card.suit === "hearts" || card.suit === "diamonds"
-                                ? "text-red-600"
-                                : "text-zinc-950"
-                              }`}
-                          >
-                            {card.suit === "hearts"
-                              ? "♥"
-                              : card.suit === "diamonds"
-                                ? "♦"
-                                : card.suit === "clubs"
-                                  ? "♣"
-                                  : "♠"}
-                          </span>
-
-                          {/* Sequence Number (Chronological: leftmost is oldest #1, rightmost is newest) */}
-                          <div className="absolute top-0.5 right-1 text-[7.5px] font-black font-mono text-zinc-500">
-                            #{index + 1}
-                          </div>
-
-                          {/* Thrown By Attribution */}
-                          <div className="absolute bottom-0 left-0 right-0 text-center text-[5.5px] font-mono uppercase tracking-[0.05em] font-bold text-zinc-500 truncate px-0.5 border-t border-zinc-200 bg-zinc-200/60 py-0.5 rounded-b-lg">
-                            {card.thrownBy || "Dealer"}
-                          </div>
-
-                          {/* GLASS ACTION OVERLAY: Muncuk ketika kartu diketuk! */}
-                          {isSelected && (
-                            <div className={`absolute inset-0 z-40 rounded-lg flex flex-col items-center justify-center backdrop-blur-[1.5px] border border-white/20 animate-fade-in transition-all duration-300 ${isDiscardSelectionValid && isMyTurn && !hasDrawnThisTurn && !isTailTooLong
-                                ? "bg-emerald-950/90 shadow-[0_0_15px_rgba(16,185,129,0.35)]"
-                                : "bg-red-950/90 shadow-[0_0_15px_rgba(239,68,68,0.2)]"
-                              }`}>
-                              {isDiscardSelectionValid && isMyTurn && !hasDrawnThisTurn && !isTailTooLong ? (
-                                <>
-                                  <span className="text-[8px] font-black text-emerald-400 tracking-widest animate-pulse">
-                                    AMBIL
-                                  </span>
-                                  <svg className="w-3.5 h-3.5 text-emerald-400 animate-bounce mt-0.5" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24">
-                                    <path d="M12 19V5m-7 7l7-7 7 7" />
-                                  </svg>
-                                </>
-                              ) : (
-                                <>
-                                  <span className="text-[7px] font-black text-red-400 tracking-[0.15em] text-center px-1">
-                                    {isTailTooLong ? "TERLALU BANYAK" : "TIDAK SAH"}
-                                  </span>
-                                  <svg className="w-3.5 h-3.5 text-red-400 mt-0.5" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24">
-                                    <path d="M6 18L18 6M6 6l12 12" />
-                                  </svg>
-                                </>
-                              )}
-                            </div>
-                          )}
-                        </div>
                       </div>
                     </div>
-                  );
-                })}
-                {discardPile.length === 0 && (
-                  <div className="h-18 w-full border border-dashed border-zinc-800/30 rounded-xl flex items-center justify-center text-[8px] font-mono text-zinc-600 tracking-wider uppercase">
-                    Kosong
                   </div>
-                )}
-              </div>
-
+                );
+              })}
+              {discardPile.length === 0 && (
+                <div className="h-18 w-full border border-dashed border-zinc-800/30 rounded-xl flex items-center justify-center text-[8px] font-mono text-zinc-600 tracking-wider uppercase">
+                  Kosong
+                </div>
+              )}
             </div>
+
           </div>
-        )}
+        </div>
 
         <DroppableDiscardArea isMyTurn={isMyTurn} hasDrawnThisTurn={hasDrawnThisTurn} />
 
@@ -550,7 +611,8 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
                   setSelectedCardIds([]);
                 }
               }}
-              className="w-16 h-16 rounded-2xl border border-emerald-400/40 bg-emerald-500/20 backdrop-blur-xl text-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.2)] animate-bounce-in flex flex-col items-center justify-center cursor-pointer active:scale-95 transition-all hover:bg-emerald-500/30 hover:border-emerald-400/60"
+              className={`w-16 h-16 rounded-2xl border border-emerald-400/40 bg-emerald-500/20 backdrop-blur-xl text-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.2)] animate-bounce-in flex flex-col items-center justify-center cursor-pointer active:scale-95 transition-all hover:bg-emerald-500/30 hover:border-emerald-400/60 ${isValidMeld ? "animate-pulse border-emerald-300 bg-emerald-500/40 shadow-[0_0_40px_rgba(16,185,129,0.5)]" : ""
+                }`}
               title="Turunkan Kartu"
             >
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
@@ -572,7 +634,7 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
             </button>
           )}
 
-          {/* BUTTON TUTUP (TROPHY) - SOLE SINGLE CARD ACTION */}
+          {/* EMOJI REACTION BAR REMOVED FROM HERE */}
           {(() => {
             // Rule Refinement: Only show TUTUP when it's your turn, you've drawn, 
             // and you've melded everything except 1 final card.
@@ -622,6 +684,7 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
                     value={card.value as any}
                     hasDrawnThisTurn={hasDrawnThisTurn}
                     isSelected={selectedCardIds.includes(card.id)}
+                    isPartofValidMeld={isValidMeld && selectedCardIds.includes(card.id)}
                     onClick={() => {
                       // Multi-select logic: Toggle selection
                       setSelectedCardIds(prev =>

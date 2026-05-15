@@ -277,6 +277,19 @@ const FloatingSocialDeck: React.FC<FloatingSocialDeckProps> = ({
             ))}
           </div>
 
+          {/* ⚡ QUICK CHAT PILLS ROW */}
+          <div className="px-3 pt-2.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1">
+            {["Buruan dong! ⏰", "Mantap Jiwa! 🔥", "Wkwkwk lucu.. 😂", "Hampir aja! 😱", "Gaspolll! 🚀", "Aduh ampas.. 🃏", "Ojo Celelean Gerrrr 🤣"].map((msg, i) => (
+              <button
+                key={i}
+                onClick={() => sendChatMessage(msg, undefined, selectedRecipient)}
+                className="px-2.5 py-1.5 rounded-lg bg-zinc-900/60 border border-zinc-800 hover:border-emerald-800/40 text-[9px] font-bold text-zinc-300 hover:text-emerald-400 whitespace-nowrap transition-all active:scale-95 cursor-pointer shadow-sm"
+              >
+                {msg}
+              </button>
+            ))}
+          </div>
+
           {/* Input Panel Area */}
           <div className="p-3 bg-black/10">
             <form onSubmit={handleSendMessage} className="flex gap-1.5 items-center">

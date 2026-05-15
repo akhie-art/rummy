@@ -98,20 +98,24 @@ body {
 /* Dealing & Modal Animations */
 @keyframes deal-card {
   0% {
-    transform: translate(-50%, -50%) rotate(0deg) scale(1);
+    transform: translate(-50%, -50%) rotate(0deg) scale(0.8);
     opacity: 0;
   }
   10% {
     opacity: 1;
+    transform: translate(-50%, -50%) rotate(10deg) scale(1.1);
+  }
+  85% {
+    opacity: 1;
   }
   100% {
-    transform: translate(calc(-50% + var(--target-x)), calc(-50% + var(--target-y))) rotate(var(--target-rotate)) scale(0.5);
+    transform: translate(calc(-50% + var(--target-x)), calc(-50% + var(--target-y))) rotate(var(--target-rotate)) scale(0.65);
     opacity: 0;
   }
 }
 
 .animate-deal-card {
-  animation: deal-card 1.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: deal-card 1.2s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
 }
 
 @keyframes scale-up {

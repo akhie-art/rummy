@@ -8,6 +8,8 @@ export interface RemotePlayer {
   hasDrawn: boolean;
   score: number;
   isDoneShowdown?: boolean;
+  voice_taunt?: string; // Base64 audio string
+  last_voice_taunt_at?: number; // Timestamp to trigger playback
 }
 
 export interface ChatMessage {
@@ -36,6 +38,14 @@ export interface RemoteGameState {
     timestamp: number;
   };
   chat_messages?: ChatMessage[];
+  card_back_color?: string;
+  reactions?: {
+    id: string;
+    sender: string;
+    emoji: string;
+    timestamp: number;
+  }[];
+  table_theme?: string;
 }
 
 export type ViewState = "landing" | "host_lobby" | "host_game" | "player_lobby" | "player_game";

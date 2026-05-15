@@ -15,6 +15,7 @@ interface HostGameBoardViewProps {
   finishGame: (updatedPlayers: RemotePlayer[]) => Promise<void>;
   triggerGlobalEndGame: (updatedPlayers: RemotePlayer[]) => Promise<void>;
   fireTauntEvent: { sender: string; target: string } | null;
+  tableThemeClass?: string;
 }
 
 
@@ -30,6 +31,7 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
   finishGame,
   triggerGlobalEndGame,
   fireTauntEvent,
+  tableThemeClass,
 }) => {
   const seatPlayers = remotePlayers.filter((p) => !p.isHost);
   const bottomPlayer = seatPlayers[0];
@@ -310,8 +312,25 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
     lastSeenPlayerNamesRef.current = currentPlayerNames;
   }, [deck, discardPile, remotePlayers, turnIndex]);
 
+  // --- VOICE TAUNT PLAYBACK SYSTEM ---
+  const lastTauntTimestamps = useRef<{ [name: string]: number }>({});
+
+  useEffect(() => {
+    remotePlayers.forEach(p => {
+      const lastTs = lastTauntTimestamps.current[p.name] || 0;
+      if (p.last_voice_taunt_at && p.last_voice_taunt_at > lastTs) {
+        // Play taunt!
+        if (p.voice_taunt) {
+          const audio = new Audio(p.voice_taunt);
+          audio.play().catch(e => console.log("Host: Auto-play blocked or failed:", e));
+        }
+        lastTauntTimestamps.current[p.name] = p.last_voice_taunt_at;
+      }
+    });
+  }, [remotePlayers]);
+
   return (
-    <div className="w-full max-w-5xl h-[90vh] relative z-10 flex flex-col justify-between animate-fade-in">
+    <div className={`w-full max-w-5xl h-[90vh] relative z-10 flex flex-col justify-between animate-fade-in ${tableThemeClass || ""}`}>
       {/* 
         FIXED COORDINATES INJECTION:
         The target slot for the top discard sits exactly at Y: -135px relative to table center!

@@ -28,8 +28,8 @@ const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
         displayScore: player.score,
       };
     })
-    // Remi Indonesia Sort: LOWEST score wins (ascending sort)!
-    .sort((a, b) => a.displayScore - b.displayScore);
+    // Highest score wins (points accumulated from melds)
+    .sort((a, b) => b.displayScore - a.displayScore);
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center px-4 animate-fade-in select-none">
@@ -55,7 +55,7 @@ const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
                 Klasemen Turnamen
               </h3>
               <span className="text-[8px] font-mono text-emerald-500 uppercase tracking-widest mt-1 block leading-none">
-                Akumulasi Poin Penalti
+                Akumulasi Poin Kartu Jadi
               </span>
             </div>
           </div>
@@ -130,7 +130,7 @@ const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
 
                   <div className="text-right flex flex-col items-end justify-center">
                     <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-[0.15em] leading-none mb-1">
-                      Poin Penalti
+                      Total Poin
                     </span>
                     <div className="flex items-baseline gap-0.5">
                       <span

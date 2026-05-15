@@ -1,4 +1,5 @@
 import React from "react";
+import VoiceTauntRecorder from "../VoiceTauntRecorder";
 import { RemotePlayer } from "../../types/game";
 
 interface PlayerLobbyViewProps {
@@ -6,6 +7,8 @@ interface PlayerLobbyViewProps {
   playerName: string;
   remotePlayers: RemotePlayer[];
   sendLobbyEmoji: (emoji: string) => Promise<void>;
+  voiceTaunt?: string;
+  onUpdateVoiceTaunt: (base64: string) => void;
 }
 
 const PlayerLobbyView: React.FC<PlayerLobbyViewProps> = ({
@@ -13,6 +16,8 @@ const PlayerLobbyView: React.FC<PlayerLobbyViewProps> = ({
   playerName,
   remotePlayers,
   sendLobbyEmoji,
+  voiceTaunt,
+  onUpdateVoiceTaunt,
 }) => {
   return (
     <div className="max-w-md w-full bg-black/30 backdrop-blur-xl rounded-3xl p-6 text-center border border-emerald-900/20 shadow-2xl relative overflow-hidden animate-fade-in">
@@ -95,6 +100,14 @@ const PlayerLobbyView: React.FC<PlayerLobbyViewProps> = ({
             </button>
           ))}
         </div>
+      </div>
+
+      {/* VOICE TAUNT RECORDER */}
+      <div className="mb-6">
+        <VoiceTauntRecorder 
+          onRecordingComplete={onUpdateVoiceTaunt}
+          savedVoice={voiceTaunt}
+        />
       </div>
 
       {/* Footer Spinner Area */}

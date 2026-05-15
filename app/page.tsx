@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Card, createDeck, shuffleDeck, sortHand, canDrawDiscardCard, getCardPoints, getMeldPoints, isSet, isRun } from "./utils/gameLogic";
 import { supabase } from "./utils/supabaseClient";
+import { audio } from "./utils/audioEngine";
 
 // Import View Komponen Modular Baru
 import LandingView from "./components/views/LandingView";
@@ -14,6 +15,8 @@ import PlayerGameBoardView from "./components/views/PlayerGameBoardView";
 // Import Modals
 import LeaderboardModal from "./components/modals/LeaderboardModal";
 import FloatingSocialDeck from "./components/modals/FloatingSocialDeck";
+import Confetti from "./components/VFX/Confetti";
+import FloatingEmojis from "./components/VFX/FloatingEmojis";
 
 // Import Shared Game Types
 import { RemotePlayer, RemoteGameState, ViewState, ChatMessage } from "./types/game";
@@ -89,6 +92,15 @@ export default function Home() {
       return prev;
     });
 
+    // 5.5 Card Back Color
+    if (newState.card_back_color) setCardBackColor(newState.card_back_color);
+    if (newState.table_theme) setTableTheme(newState.table_theme);
+
+    // 5.6 Reactions
+    if (newState.reactions) {
+      setReactions(newState.reactions.map(r => ({ id: r.id, emoji: r.emoji, timestamp: r.timestamp })));
+    }
+
     // 6. View Routing
     setView((currView: ViewState) => {
       // Jika status 'playing' tapi kita baru saja mulai (sedang animasi bagi kartu), 
@@ -163,6 +175,27 @@ export default function Home() {
   
   // --- INTEGRATED SOCIAL DECK CHAT STATE ---
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [cardBackColor, setCardBackColor] = useState<string>("emerald");
+  const [tableTheme, setTableTheme] = useState<string>("emerald");
+  const [voiceTaunt, setVoiceTaunt] = useState<string | undefined>(undefined);
+  const [reactions, setReactions] = useState<{ id: string, emoji: string, timestamp: number }[]>([]);
+
+  const cardThemes: any = {
+    emerald: { bg: "bg-emerald-900", border: "border-emerald-400", light: "bg-emerald-100/50", accent: "border-emerald-200" },
+    rose: { bg: "bg-rose-900", border: "border-rose-400", light: "bg-rose-100/50", accent: "border-rose-200" },
+    indigo: { bg: "bg-indigo-900", border: "border-indigo-400", light: "bg-indigo-100/50", accent: "border-indigo-200" },
+    amber: { bg: "bg-amber-900", border: "border-amber-400", light: "bg-amber-100/50", accent: "border-amber-200" },
+    zinc: { bg: "bg-zinc-800", border: "border-zinc-400", light: "bg-zinc-100/50", accent: "border-zinc-200" },
+  };
+  const theme = cardThemes[cardBackColor] || cardThemes.emerald;
+
+  const tableThemes: any = {
+    emerald: "bg-[#041410]",
+    midnight: "bg-[#020617]",
+    wood: "bg-[#1c0d02]",
+    casino: "bg-[#062010]",
+  };
+  const activeTableTheme = tableThemes[tableTheme] || tableThemes.emerald;
 
 
 
@@ -184,19 +217,15 @@ export default function Home() {
       const activePlayers = remotePlayers.filter(p => !p.isHost);
       const rawStandings = activePlayers.map((player) => {
         const isWinner = player.hand.length === 0;
-        let roundPoints = player.hand.reduce((sum, card) => sum + getCardPoints(card), 0);
+        let roundPoints = (player.melds || []).reduce((sum: number, group: Card[]) => sum + getMeldPoints(group), 0);
         
-        // Jika pemain menang (tangan kosong): hitung bonus tutup (jika ada) + poin meld
+        // Bonus tutup untuk pemenang
         if (isWinner) {
           const topCard = discardPile.length > 0 ? discardPile[0] : null;
           // Hanya beri bonus 10x jika kartu teratas buangan dibuang oleh si pemenang (Tutup Kartu)
           const isTutupWin = topCard && topCard.thrownBy === player.name;
           const closingBonus = isTutupWin ? getCardPoints(topCard as Card) * 10 : 0;
-          
-          const meldPoints = (player.melds || []).reduce((sum: number, group: Card[]) => sum + getMeldPoints(group), 0);
-          roundPoints = (closingBonus + meldPoints); // Bonus positive
-        } else {
-          roundPoints = -roundPoints; // Penalty negative (hutang/minus)
+          roundPoints += closingBonus;
         }
 
         const totalScore = player.score;
@@ -213,10 +242,33 @@ export default function Home() {
       // Highest score wins (Indonesian Style)
       rawStandings.sort((a, b) => b.totalScore - a.totalScore);
       setGlobalGameOverData({ standings: rawStandings, updatedPlayers: remotePlayers });
+      
+      const isMeWinner = rawStandings.some(s => s.name.toUpperCase() === (playerName || "").toUpperCase() && s.roundPoints > 0);
+      if (isMeWinner) audio.playWin();
     } else if (gameStatus !== "finished" && globalGameOverData) {
       setGlobalGameOverData(null);
     }
-  }, [gameStatus, remotePlayers, view, globalGameOverData]);
+  }, [gameStatus, remotePlayers, view, globalGameOverData, playerName]);
+
+  // Dealing Cards Audio Effect
+  useEffect(() => {
+    if (isDealingCards) {
+      for (let i = 0; i < 7; i++) {
+        setTimeout(() => audio.playCardDeal(), i * 150);
+      }
+    }
+  }, [isDealingCards]);
+
+  // Turn Start Ping Effect
+  useEffect(() => {
+    if (gameStatus === "playing" && view === "player_game") {
+      const playingPlayers = remotePlayers.filter(p => !p.isHost);
+      const myIdx = playingPlayers.findIndex(p => p.name.toUpperCase() === (playerName || "").toUpperCase());
+      if (myIdx !== -1 && myIdx === activeTurnIndex) {
+        audio.playTurnStart();
+      }
+    }
+  }, [activeTurnIndex, gameStatus, view, remotePlayers, playerName]);
 
   const subscribeToRoom = async (code: string, myName: string) => {
     // 1. Bersihkan channel lama secara aman (AWAIT agar tidak bentrok dengan channel baru!)
@@ -364,7 +416,9 @@ export default function Home() {
       deck: [],
       discard_pile: [],
       players: [{ name: "Host", hand: [], melds: [], isHost: true, hasDrawn: false, score: 0 }],
-      turn_index: 0
+      turn_index: 0,
+      card_back_color: cardBackColor,
+      table_theme: tableTheme
     };
 
     const { error } = await supabase
@@ -527,11 +581,38 @@ export default function Home() {
   const handleTriggerGlobalEndGame = async (updatedPlayers: RemotePlayer[]) => {
     if (!roomCode) return;
     
+    // Hitung poin sebelum mengirim status "finished"
+    const activePlayers = updatedPlayers.filter(p => !p.isHost);
+    const rawStandings = activePlayers.map((player) => {
+      const isWinner = player.hand.length === 0;
+      let roundPoints = (player.melds || []).reduce((sum, group) => sum + getMeldPoints(group), 0);
+      
+      if (isWinner) {
+        const topCard = discardPile.length > 0 ? discardPile[0] : null;
+        const isTutupWin = topCard && topCard.thrownBy === player.name;
+        const closingBonus = isTutupWin ? getCardPoints(topCard as Card) * 10 : 0;
+        roundPoints += closingBonus;
+      }
+
+      const prevScore = player.score || 0;
+      const totalScore = prevScore + roundPoints;
+      return { name: player.name, totalScore };
+    });
+
+    const finalPlayers = updatedPlayers.map((p) => {
+      if (p.isHost) return p;
+      const match = rawStandings.find((s) => s.name === p.name);
+      return {
+        ...p,
+        score: match ? match.totalScore : p.score,
+      };
+    });
+    
     const updatedState: RemoteGameState = {
       status: "finished",
       deck,
       discard_pile: discardPile,
-      players: updatedPlayers,
+      players: finalPlayers,
       turn_index: activeTurnIndex
     };
 
@@ -854,6 +935,7 @@ export default function Home() {
     const myIdx = playingPlayers.findIndex(p => p.name.toUpperCase() === playerName.toUpperCase());
     
     if (myIdx !== activeTurnIndex) {
+      audio.playError();
       setToastMsg("Tunggu! Bukan Giliran Anda ⏰");
       setTimeout(() => setToastMsg(null), 2000);
       return null;
@@ -878,8 +960,7 @@ export default function Home() {
       finalStatus = "finished";
       
       const rawStandings = playingPlayers.map((player) => {
-        const pHand = player.name.toUpperCase() === playerName.toUpperCase() ? updatedHand : player.hand;
-        const roundPoints = pHand.reduce((sum, card) => sum + getCardPoints(card), 0);
+        const roundPoints = (player.melds || []).reduce((sum, group) => sum + getMeldPoints(group), 0);
         const prevScore = player.score || 0;
         const totalScore = prevScore + roundPoints;
         return { name: player.name, totalScore };
@@ -912,8 +993,9 @@ export default function Home() {
     setDeck(updatedDeck);
     setPlayerHand(updatedHand);
     setHasDrawnThisTurn(true);
-    setRemotePlayers(nextPlayers);
+    setRemotePlayers(finalPlayers);
     
+    audio.playCardDraw();
     setSelectedDiscardIndex(null);
     return drawnCard;
   };
@@ -927,6 +1009,7 @@ export default function Home() {
     const myIdx = playingPlayers.findIndex(p => p.name.toUpperCase() === playerName.toUpperCase());
     
     if (myIdx !== activeTurnIndex) {
+      audio.playError();
       setToastMsg("Tunggu! Bukan Giliran Anda ⏰");
       setTimeout(() => setToastMsg(null), 2000);
       return;
@@ -936,6 +1019,7 @@ export default function Home() {
     // Rule: Cannot take more than 7 cards from discard pile
     const countToTake = index + 1;
     if (countToTake > 7) {
+      audio.playError();
       setToastMsg("Maksimal ambil 7 kartu dari buangan! 🚫");
       setTimeout(() => setToastMsg(null), 2000);
       return;
@@ -967,22 +1051,30 @@ export default function Home() {
     setHasDrawnThisTurn(true);
     setRemotePlayers(nextPlayers);
     
+    audio.playCardDraw();
     setSelectedDiscardIndex(null);
   };
 
   const discardSelected = async (cardId: string) => {
     if (!cardId) return;
     // Izinkan TUTUP kartu kapanpun jika sisa 1 kartu (bisa menang meski belum ambil kartu)
-    if (!hasDrawnThisTurn && playerHand.length > 1) return;
+    if (!hasDrawnThisTurn && playerHand.length > 1) {
+      audio.playError();
+      setToastMsg("Ambil kartu dulu sebelum membuang! 🃏");
+      setTimeout(() => setToastMsg(null), 2000);
+      return;
+    }
 
     const targetCard = playerHand.find(c => c.id === cardId);
     if (!targetCard) return;
 
-    // Rule: Joker (JKR) strictly cannot be discarded!
+    // Rule: Joker (JKR) strictly cannot be discarded unless it's the last card used to close!
     if (targetCard.value === "JKR" || targetCard.suit === "joker") {
-      setToastMsg("❌ KARTU JOKER TIDAK BOLEH DIBUANG!");
-      setTimeout(() => setToastMsg(null), 2500);
-      return;
+      if (playerHand.length > 1) {
+        setToastMsg("❌ KARTU JOKER TIDAK BOLEH DIBUANG KECUALI UNTUK MENUTUP!");
+        setTimeout(() => setToastMsg(null), 2500);
+        return;
+      }
     }
 
     const cardWithAttribution = { ...targetCard, thrownBy: playerName || "Pemain" };
@@ -1032,6 +1124,8 @@ export default function Home() {
     setActiveTurnIndex(nextTurnIdx);
     setHasDrawnThisTurn(false);
     setGameStatus(finalStatus);
+    
+    audio.playCardDrop();
 
     if (finalStatus === "showdown") {
       setToastMsg("🏆 TUTUP KARTU! BABAK TURUN KARTU DIMULAI.");
@@ -1040,12 +1134,18 @@ export default function Home() {
   };
 
   const meldSelectedCards = async (cardIds: string[]): Promise<boolean> => {
-    if (cardIds.length < 3) return false;
+    if (cardIds.length < 3) {
+      audio.playError();
+      setToastMsg("Kombinasi minimal 3 kartu! 🚫");
+      setTimeout(() => setToastMsg(null), 2000);
+      return false;
+    }
     
     const selectedCards = playerHand.filter(c => cardIds.includes(c.id));
     const isValidCombination = isSet(selectedCards) || isRun(selectedCards);
     
     if (!isValidCombination) {
+      audio.playError();
       setToastMsg("Kombinasi kartu tidak sah! ⚠️");
       setTimeout(() => setToastMsg(null), 2500);
       return false;
@@ -1101,6 +1201,8 @@ export default function Home() {
     setPlayerHand(updatedHand);
     setRemotePlayers(finalPlayers);
     setGameStatus(finalStatus);
+    
+    audio.playCardDrop();
 
     if (finalStatus === "showdown") {
       setToastMsg("🏆 KARTU HABIS! BABAK TURUN KARTU DIMULAI.");
@@ -1181,6 +1283,56 @@ export default function Home() {
     }
   };
 
+  const sendReaction = async (emoji: string) => {
+    if (!roomCode) return;
+    const { data: currentRoom } = await supabase.from("rooms").select("state").eq("code", roomCode.toUpperCase()).single();
+    if (currentRoom) {
+      const state = currentRoom.state as RemoteGameState;
+      const now = Date.now();
+      const newReaction = {
+        id: `${playerName}_${now}_${Math.random().toString(36).substr(2, 5)}`,
+        sender: playerName,
+        emoji,
+        timestamp: now
+      };
+      
+      // Keep only recent reactions (last 10) to avoid state bloat
+      const updatedReactions = [newReaction, ...(state.reactions || [])].slice(0, 10);
+      
+      const nextState = { ...state, reactions: updatedReactions };
+      await supabase.from("rooms").update({ state: nextState }).eq("code", roomCode.toUpperCase());
+    }
+  };
+
+  const handleUpdateVoiceTaunt = async (base64: string) => {
+    setVoiceTaunt(base64);
+    if (!roomCode) return;
+
+    const { data } = await supabase.from("rooms").select("state").eq("code", roomCode.toUpperCase()).single();
+    if (data?.state) {
+      const newState = { ...data.state };
+      const myIdx = newState.players.findIndex((p: any) => p.name.toUpperCase() === playerName.toUpperCase());
+      if (myIdx !== -1) {
+        newState.players[myIdx].voice_taunt = base64;
+        await supabase.from("rooms").update({ state: newState }).eq("code", roomCode.toUpperCase());
+      }
+    }
+  };
+
+  const sendVoiceTaunt = async () => {
+    if (!roomCode || !voiceTaunt) return;
+
+    const { data } = await supabase.from("rooms").select("state").eq("code", roomCode.toUpperCase()).single();
+    if (data?.state) {
+      const newState = { ...data.state };
+      const myIdx = newState.players.findIndex((p: any) => p.name.toUpperCase() === playerName.toUpperCase());
+      if (myIdx !== -1) {
+        newState.players[myIdx].last_voice_taunt_at = Date.now();
+        await supabase.from("rooms").update({ state: newState }).eq("code", roomCode.toUpperCase());
+      }
+    }
+  };
+
   const finishShowdown = async () => {
     if (gameStatus !== "showdown") return;
 
@@ -1202,13 +1354,13 @@ export default function Home() {
       
       const rawStandings = allPlayingPlayers.map((player) => {
         const isWinner = player.hand.length === 0;
-        let roundPoints = player.hand.reduce((sum, card) => sum + getCardPoints(card), 0);
+        let roundPoints = (player.melds || []).reduce((sum, group) => sum + getMeldPoints(group), 0);
         
         if (isWinner) {
-          const meldPoints = player.melds?.reduce((sum, group) => sum + getMeldPoints(group), 0) || 0;
-          roundPoints = meldPoints; // Bonus positive
-        } else {
-          roundPoints = -roundPoints; // Penalty negative
+          const topCard = discardPile.length > 0 ? discardPile[0] : null;
+          const isTutupWin = topCard && topCard.thrownBy === player.name;
+          const closingBonus = isTutupWin ? getCardPoints(topCard as Card) * 10 : 0;
+          roundPoints += closingBonus;
         }
 
         const prevScore = player.score || 0;
@@ -1682,27 +1834,52 @@ export default function Home() {
         <div className="fixed inset-0 z-[100000] flex items-center justify-center bg-black/60 backdrop-blur-sm overflow-hidden pointer-events-none">
           <div className="relative w-full h-full">
             {/* Center Deck Source */}
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-20 h-28 bg-zinc-100 rounded-xl border-2 border-zinc-300 shadow-2xl flex items-center justify-center">
-              <div className="w-16 h-24 border border-zinc-200 rounded-lg bg-zinc-50 flex items-center justify-center">
-                <div className="w-10 h-14 bg-emerald-100/50 rounded flex items-center justify-center">
-                  <div className="w-6 h-8 border border-emerald-200 rounded-sm" />
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
+              {[...Array(4)].map((_, i) => (
+                <div 
+                  key={i} 
+                  className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-20 h-28 ${theme.bg} rounded-xl border-2 ${theme.border} shadow-xl flex items-center justify-center`}
+                  style={{ transform: `translate(calc(-50% - ${i * 2}px), calc(-50% - ${i * 2}px))` }}
+                >
+                  <div className="w-16 h-24 border border-white/10 rounded-lg flex items-center justify-center">
+                    <div className={`w-10 h-14 ${theme.light} rounded flex items-center justify-center`}>
+                      <div className={`w-6 h-8 border ${theme.accent} rounded-sm`} />
+                    </div>
+                  </div>
                 </div>
-              </div>
+              ))}
             </div>
 
             {/* Flying Cards Simulation */}
-            {[...Array(16)].map((_, i) => (
-              <div
-                key={i}
-                className="absolute top-1/2 left-1/2 w-16 h-24 bg-white rounded-lg border border-zinc-300 shadow-lg animate-deal-card"
-                style={{
-                  animationDelay: `${i * 0.1}s`,
-                  "--target-x": `${(i % 4 === 0 ? -180 : i % 4 === 1 ? 180 : i % 4 === 2 ? -180 : 180)}%`,
-                  "--target-y": `${(i % 4 < 2 ? -220 : 220)}%`,
-                  "--target-rotate": `${(i * 90) % 360}deg`
-                } as any}
-              />
-            ))}
+            {[...Array(28)].map((_, i) => {
+              const playerIndex = i % 4; // 0: Bottom, 1: Top, 2: Left, 3: Right
+              const stackIndex = Math.floor(i / 4); // 0 to 6 (7 cards per player)
+              
+              let tx = 0, ty = 0, rot = 0;
+              
+              // Target players positioned at 4 sides of the table
+              if (playerIndex === 0) { ty = 350; tx = stackIndex * 8 - 24; rot = stackIndex * 4 - 12; }
+              else if (playerIndex === 1) { ty = -350; tx = stackIndex * 8 - 24; rot = stackIndex * 4 - 12; }
+              else if (playerIndex === 2) { tx = -350; ty = stackIndex * 8 - 24; rot = -90 + (stackIndex * 4 - 12); }
+              else if (playerIndex === 3) { tx = 350; ty = stackIndex * 8 - 24; rot = 90 + (stackIndex * 4 - 12); }
+
+              return (
+                <div
+                  key={i}
+                  className={`absolute top-1/2 left-1/2 w-16 h-24 ${theme.bg} rounded-lg border-2 ${theme.border} shadow-[0_10px_20px_rgba(0,0,0,0.5)] animate-deal-card flex items-center justify-center`}
+                  style={{
+                    animationDelay: `${i * 0.08}s`,
+                    "--target-x": `${tx}%`,
+                    "--target-y": `${ty}%`,
+                    "--target-rotate": `${rot}deg`
+                  } as React.CSSProperties}
+                >
+                  <div className={`w-10 h-14 ${theme.light} rounded flex items-center justify-center`}>
+                    <div className={`w-6 h-8 border ${theme.accent} rounded-sm`} />
+                  </div>
+                </div>
+              );
+            })}
 
             <div className="absolute top-[62%] left-1/2 -translate-x-1/2 text-white font-black italic tracking-[0.4em] text-xl drop-shadow-2xl animate-pulse text-center">
               MEMBAGI KARTU...
@@ -1921,7 +2098,9 @@ export default function Home() {
 
       {/* IMMERSIVE GLOBAL GAME OVER & SCOREBOARD STANDINGS OVERLAY */}
       {globalGameOverData && (
-        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
+        <>
+          {globalGameOverData.standings[0]?.name.toUpperCase() === playerName.toUpperCase() && <Confetti />}
+          <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
           {/* Glassmorphic Modal Container */}
           <div className="w-full max-w-md bg-[#03100c]/90 border border-emerald-900/30 rounded-3xl shadow-[0_25px_70px_rgba(0,0,0,0.9)] p-6 relative overflow-hidden animate-scale-up">
             {/* Emerald glow orb in background */}
@@ -1979,9 +2158,9 @@ export default function Home() {
                           </span>
                           <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-wider">
                             {entry.roundPoints > 0 ? (
-                              <>Bonus Tutup: <span className="text-emerald-400 font-bold">+{entry.roundPoints}</span></>
+                              <>Skor Babak: <span className="text-emerald-400 font-bold">+{entry.roundPoints}</span></>
                             ) : (
-                              <>Hutang (Minus): <span className="text-red-500/80">-{Math.abs(entry.roundPoints)}</span></>
+                              <>Skor Babak: <span className="text-zinc-400 font-bold">0</span></>
                             )}
                           </span>
                         </div>
@@ -2078,7 +2257,8 @@ export default function Home() {
             </div>
           </div>
         </div>
-      )}
+      </>
+    )}
 
       {/* ========================================= */}
       {/* ========================================= */}
@@ -2102,6 +2282,12 @@ export default function Home() {
           remotePlayers={remotePlayers}
           handleStartGame={handleStartGame}
           setView={handleExitGame}
+          cardBackColor={cardBackColor}
+          setCardBackColor={setCardBackColor}
+          tableTheme={tableTheme}
+          setTableTheme={setTableTheme}
+          voiceTaunt={voiceTaunt}
+          onUpdateVoiceTaunt={handleUpdateVoiceTaunt}
         />
       )}
 
@@ -2118,6 +2304,7 @@ export default function Home() {
           fireTauntEvent={hostFireTaunt}
           finishGame={handleFinishGame}
           triggerGlobalEndGame={handleTriggerGlobalEndGame}
+          tableThemeClass={activeTableTheme}
         />
       )}
 
@@ -2127,6 +2314,8 @@ export default function Home() {
           playerName={playerName}
           remotePlayers={remotePlayers}
           sendLobbyEmoji={sendLobbyEmoji}
+          voiceTaunt={voiceTaunt}
+          onUpdateVoiceTaunt={handleUpdateVoiceTaunt}
         />
       )}
 
@@ -2159,6 +2348,10 @@ export default function Home() {
           syncHandSort={syncHandSort}
           setToastMsg={setToastMsg}
           onShowLeaderboard={() => setShowLeaderboard(true)}
+          sendReaction={sendReaction}
+          sendVoiceTaunt={sendVoiceTaunt}
+          myVoiceTaunt={voiceTaunt}
+          tableThemeClass={activeTableTheme}
           melds={remotePlayers.find((p) => p.name.toUpperCase() === playerName.toUpperCase())?.melds || []}
           isDoneShowdown={remotePlayers.find((p) => p.name.toUpperCase() === playerName.toUpperCase())?.isDoneShowdown || false}
         />
@@ -2173,6 +2366,8 @@ export default function Home() {
           remotePlayers={remotePlayers}
         />
       )}
+      {/* Social Reactions Layer */}
+      <FloatingEmojis reactions={reactions} />
     </main>
   );
 }

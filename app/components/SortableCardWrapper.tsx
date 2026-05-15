@@ -10,6 +10,7 @@ interface SortableCardWrapperProps {
   suit: Suit;
   value: CardValue;
   isSelected: boolean;
+  isPartofValidMeld?: boolean;
   hasDrawnThisTurn: boolean;
   onClick: () => void;
 }
@@ -19,6 +20,7 @@ export default function SortableCardWrapper({
   suit,
   value,
   isSelected,
+  isPartofValidMeld,
   hasDrawnThisTurn,
   onClick,
 }: SortableCardWrapperProps) {
@@ -63,10 +65,23 @@ export default function SortableCardWrapper({
         value={value}
         isSelected={isSelected}
         onClick={onClick}
-        className={`!w-12 !h-[72px] shadow-xl rounded-xl border-2 ${
+        className={`!w-12 !h-[72px] shadow-xl rounded-xl border-2 transition-all duration-300 ${
           isDragging ? "scale-105 rotate-3 cursor-grabbing shadow-gold/20" : "cursor-grab"
-        } ${isSelected ? "border-gold shadow-gold/40 scale-105" : "border-zinc-300"}`}
+        } ${
+          isPartofValidMeld 
+            ? "border-emerald-400 shadow-[0_0_15px_rgba(52,211,153,0.6)] scale-110" 
+            : isSelected 
+              ? "border-gold shadow-gold/40 scale-105" 
+              : suit === 'joker' 
+                ? "border-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.5)] bg-amber-50/10"
+                : "border-zinc-300"
+        }`}
       />
+
+      {/* Special Joker Glow Overlay */}
+      {suit === 'joker' && !isDragging && (
+        <div className="absolute inset-0 rounded-xl bg-gradient-to-tr from-amber-400/10 to-transparent animate-pulse pointer-events-none border border-amber-300/30" />
+      )}
 
       {/* Selection Indicator Dot */}
       {isSelected && !isDragging && (

@@ -272,19 +272,18 @@ export const getAutomaticDiscardMeldCards = (targetCard: Card, hand: Card[], exi
 
   // We sort the hand first to make the selection predictable (preferring neighbors)
   const sortedHand = sortHand(hand);
+  const jokersInHand = sortedHand.filter(c => c.suit === "joker");
+  const numJokers = jokersInHand.length;
 
   for (let i = 0; i < sortedHand.length; i++) {
     for (let j = i + 1; j < sortedHand.length; j++) {
       const c1 = sortedHand[i];
       const c2 = sortedHand[j];
       
-      // Rule: Cannot use ANY JOKER from hand to help draw from discard.
+      // Rule 1: Cannot use ANY JOKER from hand as part of the core 2-card requirement.
       // The supporting pair in the hand MUST consist of two normal cards!
+      // This enforces that you cannot pick up a discard with just 1 normal card + Jokers.
       if (c1.suit === "joker" || c2.suit === "joker") continue;
-      
-      // Rule: Taking from the discard pile to form a Set (Group) is allowed 
-      // ONLY if the player already has a Sequence (Run) in their Safe Zone (melds)
-      // or an existing Run in their remaining hand.
       
       // 1. CHECK SET (Allowed only if a Run is already established)
       if (isSet([c1, c2, targetCard])) {
@@ -298,31 +297,26 @@ export const getAutomaticDiscardMeldCards = (targetCard: Card, hand: Card[], exi
       }
       
       // 2. CHECK RUN
-      if (isRun([c1, c2, targetCard])) {
-        if (targetCard.suit === "joker") return [c1, c2];
-
-        const T = getCardNumericValue(targetCard.value);
-        const normalValues = [c1, c2, targetCard]
-          .filter(c => c.suit !== "joker")
-          .map(c => getCardNumericValue(c.value));
-        
-        const minVal = Math.min(...normalValues);
-        const maxVal = Math.max(...normalValues);
-        const isAllNumeric = normalValues.every(v => v >= 2 && v <= 10);
-        const boundMin = isAllNumeric ? 2 : 11;
-        const boundMax = isAllNumeric ? 10 : 13;
-
-        for (let S = boundMin; S <= boundMax - 2; S++) {
-          const endVal = S + 2;
-          if (S <= minVal && endVal >= maxVal) {
-            if (T === S || T === endVal) {
-              return [c1, c2];
-            }
-          }
+      // To see if c1, c2, targetCard can form a valid run, we test them with increasing numbers
+      // of available Jokers from the hand to bridge any gaps (e.g. 2, 4, 5 needs 1 joker as 3).
+      for (let jCount = 0; jCount <= numJokers; jCount++) {
+        const testCards = [c1, c2, targetCard, ...jokersInHand.slice(0, jCount)];
+        if (isRun(testCards)) {
+          // Return the selected normal cards PLUS the exact number of jokers needed
+          return [c1, c2, ...jokersInHand.slice(0, jCount)];
         }
       }
     }
   }
   return null;
 };
+
+export const getPlayerRank = (score: number) => {
+  if (score >= 5000) return { title: "Sultan Rummy", color: "text-amber-400", bg: "bg-amber-400/10" };
+  if (score >= 2000) return { title: "Grand Master", color: "text-purple-400", bg: "bg-purple-400/10" };
+  if (score >= 1000) return { title: "Jagoan", color: "text-emerald-400", bg: "bg-emerald-400/10" };
+  if (score >= 500) return { title: "Pemain Berbakat", color: "text-blue-400", bg: "bg-blue-400/10" };
+  return { title: "Pemula", color: "text-zinc-400", bg: "bg-zinc-400/10" };
+};
+
 
