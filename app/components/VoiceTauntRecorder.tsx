@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 
 interface VoiceTauntRecorderProps {
   onRecordingComplete: (base64: string) => void;
@@ -19,10 +19,28 @@ const VoiceTauntRecorder: React.FC<VoiceTauntRecorderProps> = ({
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
+  // Pre-initialize audio element for better Safari compatibility
+  useEffect(() => {
+    audioRef.current = new Audio();
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+      }
+    };
+  }, []);
+
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
+      
+      const mimeType = MediaRecorder.isTypeSupported("audio/mp4") 
+        ? "audio/mp4" 
+        : MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : "audio/webm";
+
+      const mediaRecorder = new MediaRecorder(stream, { mimeType });
       mediaRecorderRef.current = mediaRecorder;
       chunksRef.current = [];
 
@@ -33,7 +51,8 @@ const VoiceTauntRecorder: React.FC<VoiceTauntRecorderProps> = ({
       };
 
       mediaRecorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        const mimeType = mediaRecorder.mimeType || "audio/webm";
+        const blob = new Blob(chunksRef.current, { type: mimeType });
         const reader = new FileReader();
         reader.readAsDataURL(blob);
         reader.onloadend = () => {
@@ -74,15 +93,28 @@ const VoiceTauntRecorder: React.FC<VoiceTauntRecorderProps> = ({
   };
 
   const playTaunt = () => {
-    if (!savedVoice) return;
-    if (audioRef.current) {
+    if (!savedVoice || !audioRef.current) return;
+    
+    try {
       audioRef.current.pause();
+      audioRef.current.src = savedVoice;
+      audioRef.current.load();
+      
+      const playPromise = audioRef.current.play();
+      if (playPromise !== undefined) {
+        setIsPlaying(true);
+        playPromise
+          .then(() => {
+            audioRef.current!.onended = () => setIsPlaying(false);
+          })
+          .catch(err => {
+            console.error("Safari Playback Error:", err);
+            setIsPlaying(false);
+          });
+      }
+    } catch (e) {
+      console.error("Playback setup error:", e);
     }
-    const audio = new Audio(savedVoice);
-    audioRef.current = audio;
-    audio.onended = () => setIsPlaying(false);
-    audio.play();
-    setIsPlaying(true);
   };
 
   return (

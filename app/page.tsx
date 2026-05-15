@@ -1328,7 +1328,12 @@ export default function Home() {
       const myIdx = newState.players.findIndex((p: any) => p.name.toUpperCase() === playerName.toUpperCase());
       if (myIdx !== -1) {
         newState.players[myIdx].last_voice_taunt_at = Date.now();
-        await supabase.from("rooms").update({ state: newState }).eq("code", roomCode.toUpperCase());
+        // Also ensure voice_taunt is attached in case it was lost
+        newState.players[myIdx].voice_taunt = voiceTaunt;
+        
+        console.log(`📡 [SEND TAUNT] Updating state for ${playerName}`);
+        const { error } = await supabase.from("rooms").update({ state: newState }).eq("code", roomCode.toUpperCase());
+        if (error) console.error("❌ [TAUNT ERROR]:", error);
       }
     }
   };

@@ -161,22 +161,65 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
     lastSeenPlayersHands.current = nextHands;
   }, [discardPile, remotePlayers, turnIndex]);
 
-  // --- VOICE TAUNT PLAYBACK SYSTEM ---
   const lastTauntTimestamps = React.useRef<{ [name: string]: number }>({});
-  
+  const audioUnlocked = React.useRef(false);
+  const tauntAudioRef = React.useRef<HTMLAudioElement | null>(null);
+
+  // Initialize persistent audio element
+  React.useEffect(() => {
+    tauntAudioRef.current = new Audio();
+    return () => {
+      if (tauntAudioRef.current) {
+        tauntAudioRef.current.pause();
+        tauntAudioRef.current.src = "";
+      }
+    };
+  }, []);
+
+  // Function to unlock audio on first interaction
+  const unlockAudio = () => {
+    if (audioUnlocked.current) return;
+    if (tauntAudioRef.current) {
+      tauntAudioRef.current.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAP8A";
+      tauntAudioRef.current.play().then(() => {
+        audioUnlocked.current = true;
+        console.log("🔊 Audio Context Primed!");
+      }).catch(() => {});
+    }
+  };
+
   React.useEffect(() => {
     remotePlayers.forEach(p => {
       const lastTs = lastTauntTimestamps.current[p.name] || 0;
       if (p.last_voice_taunt_at && p.last_voice_taunt_at > lastTs) {
+        console.log(`🔊 [VOICE TAUNT] From: ${p.name}`);
+        
+        // Visual indicator
+        if (p.name.toUpperCase() !== playerName.toUpperCase()) {
+          setToastMsg(`${p.name.toUpperCase()} mengirim suara! 🎙️`);
+          setTimeout(() => setToastMsg(null), 3000);
+        }
+
         // Play taunt!
-        if (p.voice_taunt) {
-          const audio = new Audio(p.voice_taunt);
-          audio.play().catch(e => console.log("Auto-play blocked or failed:", e));
+        if (p.voice_taunt && tauntAudioRef.current) {
+          try {
+            tauntAudioRef.current.pause();
+            tauntAudioRef.current.src = p.voice_taunt;
+            tauntAudioRef.current.load();
+            tauntAudioRef.current.play().catch(e => {
+              console.warn("Auto-play blocked for voice taunt:", e);
+              if (p.name.toUpperCase() !== playerName.toUpperCase()) {
+                setToastMsg("Suara diblokir browser. Tap layar untuk aktifkan! 🔇");
+              }
+            });
+          } catch (e) {
+            console.error("Taunt playback error:", e);
+          }
         }
         lastTauntTimestamps.current[p.name] = p.last_voice_taunt_at;
       }
     });
-  }, [remotePlayers]);
+  }, [remotePlayers, playerName, setToastMsg]);
 
   // --- OPPONENT MELD MODAL ---
   const [viewingOpponent, setViewingOpponent] = useState<any | null>(null);
@@ -267,6 +310,7 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
   return (
     <div
       onClick={() => {
+        unlockAudio();
         // Klik di luar kartu → batalkan semua seleksi
         setSelectedDiscardIndex(null);
         setSelectedCardIds([]);

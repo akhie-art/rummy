@@ -314,15 +314,45 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
 
   // --- VOICE TAUNT PLAYBACK SYSTEM ---
   const lastTauntTimestamps = useRef<{ [name: string]: number }>({});
+  const audioUnlocked = useRef(false);
+  const tauntAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    tauntAudioRef.current = new Audio();
+    return () => {
+      if (tauntAudioRef.current) {
+        tauntAudioRef.current.pause();
+        tauntAudioRef.current.src = "";
+      }
+    };
+  }, []);
+
+  const unlockAudio = () => {
+    if (audioUnlocked.current) return;
+    if (tauntAudioRef.current) {
+      tauntAudioRef.current.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAP8A";
+      tauntAudioRef.current.play().then(() => {
+        audioUnlocked.current = true;
+        console.log("🔊 Host Audio Context Primed!");
+      }).catch(() => {});
+    }
+  };
 
   useEffect(() => {
     remotePlayers.forEach(p => {
       const lastTs = lastTauntTimestamps.current[p.name] || 0;
       if (p.last_voice_taunt_at && p.last_voice_taunt_at > lastTs) {
+        console.log(`🔊 [HOST VOICE TAUNT] From: ${p.name}`);
         // Play taunt!
-        if (p.voice_taunt) {
-          const audio = new Audio(p.voice_taunt);
-          audio.play().catch(e => console.log("Host: Auto-play blocked or failed:", e));
+        if (p.voice_taunt && tauntAudioRef.current) {
+          try {
+            tauntAudioRef.current.pause();
+            tauntAudioRef.current.src = p.voice_taunt;
+            tauntAudioRef.current.load();
+            tauntAudioRef.current.play().catch(e => console.log("Host: Auto-play blocked:", e));
+          } catch (e) {
+            console.error("Host playback error:", e);
+          }
         }
         lastTauntTimestamps.current[p.name] = p.last_voice_taunt_at;
       }
@@ -330,7 +360,10 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
   }, [remotePlayers]);
 
   return (
-    <div className={`w-full max-w-5xl h-[90vh] relative z-10 flex flex-col justify-between animate-fade-in ${tableThemeClass || ""}`}>
+    <div 
+      onClick={unlockAudio}
+      className={`w-full max-w-5xl h-[90vh] relative z-10 flex flex-col justify-between animate-fade-in ${tableThemeClass || ""}`}
+    >
       {/* 
         FIXED COORDINATES INJECTION:
         The target slot for the top discard sits exactly at Y: -135px relative to table center!
