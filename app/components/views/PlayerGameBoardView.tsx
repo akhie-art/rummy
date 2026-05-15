@@ -1,7 +1,9 @@
 import React, { useState } from "react";
+import FloatingEmojis from "../VFX/FloatingEmojis";
 import SortableCardWrapper from "../SortableCardWrapper";
 import { Card, isSet, isRun, getPlayerRank } from "../../utils/gameLogic";
 import { ViewState } from "../../types/game";
+import { soundEngine } from "../../utils/soundEngine";
 
 // Drag and drop sorting imports
 import {
@@ -53,10 +55,12 @@ interface PlayerGameBoardViewProps {
   turnIndex: number;
   playerName: string;
   sendReaction: (emoji: string) => Promise<void>;
+  reactions: { id: string; emoji: string; timestamp: number }[];
   sendVoiceTaunt: () => Promise<void>;
   voiceTauntEvent: { sender: string, timestamp: number } | null;
   myVoiceTaunt?: string;
   tableThemeClass?: string;
+  fireTaunt: { active: boolean, sender: string | null, target: string | null };
 }
 
 const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
@@ -90,10 +94,12 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
   turnIndex,
   playerName,
   sendReaction,
+  reactions,
   sendVoiceTaunt,
   voiceTauntEvent,
   myVoiceTaunt,
   tableThemeClass,
+  fireTaunt,
 }) => {
   const isShowdown = gameStatus === "showdown";
   const circularDiscards = [...discardPile].reverse(); // Render from oldest to newest (left-to-right)
@@ -154,14 +160,21 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
       });
       setTimeout(() => setBroadcast(null), 2500);
     }
-
-    // Update refs for next run
+    
+    // Update baseline for next run
     lastSeenDiscardPileCount.current = discardPile.length;
     lastSeenDiscardId.current = discardPile[0]?.id || null;
     const nextHands: { [name: string]: number } = {};
     remotePlayers.forEach(p => { nextHands[p.name] = p.hand.length; });
     lastSeenPlayersHands.current = nextHands;
   }, [discardPile, remotePlayers, turnIndex]);
+
+  const [isShaking, setIsShaking] = useState(false);
+  const triggerShake = () => {
+    setIsShaking(true);
+    setTimeout(() => setIsShaking(false), 500);
+  };
+
 
   const lastTauntTimestamps = React.useRef<{ [name: string]: number }>({});
   const audioUnlocked = React.useRef(false);
@@ -190,63 +203,79 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
     }
   };
 
-  React.useEffect(() => {
-    remotePlayers.forEach(p => {
-      const lastTs = lastTauntTimestamps.current[p.name] || 0;
-      if (p.last_voice_taunt_at && p.last_voice_taunt_at > lastTs) {
-        console.log(`🔊 [VOICE TAUNT] From: ${p.name}`);
-        
-        // Visual indicator
-        if (p.name.toUpperCase() !== playerName.toUpperCase()) {
-          setToastMsg(`${p.name.toUpperCase()} mengirim suara! 🎙️`);
-          setTimeout(() => setToastMsg(null), 3000);
-        }
-
-        // Play taunt!
-        if (p.voice_taunt && tauntAudioRef.current) {
-          try {
-            tauntAudioRef.current.pause();
-            tauntAudioRef.current.src = p.voice_taunt;
-            tauntAudioRef.current.load();
-            tauntAudioRef.current.play().catch(e => {
-              console.warn("Auto-play blocked for voice taunt:", e);
-              if (p.name.toUpperCase() !== playerName.toUpperCase()) {
-                setToastMsg("Suara diblokir browser. Tap layar untuk aktifkan! 🔇");
-              }
-            });
-          } catch (e) {
-            console.error("Taunt playback error:", e);
-          }
-        }
-        lastTauntTimestamps.current[p.name] = p.last_voice_taunt_at;
-      }
-    });
-  }, [remotePlayers, playerName, setToastMsg]);
+  const pendingTaunt = React.useRef<{ sender: string, timestamp: number } | null>(null);
 
   // --- INSTANT BROADCAST TAUNT LISTENER ---
   React.useEffect(() => {
     if (voiceTauntEvent) {
       const p = remotePlayers.find(pl => pl.name.toUpperCase() === voiceTauntEvent.sender.toUpperCase());
-      if (p && p.voice_taunt && tauntAudioRef.current) {
+      
+      if (p && p.voice_taunt) {
+        // We have the audio! Play it now.
         console.log(`⚡ [INSTANT TAUNT] From: ${p.name}`);
-        
-        // Visual indicator
-        if (p.name.toUpperCase() !== playerName.toUpperCase()) {
-          setToastMsg(`${p.name.toUpperCase()} mengirim suara! 🎙️`);
-          setTimeout(() => setToastMsg(null), 3000);
-        }
-
-        try {
-          tauntAudioRef.current.pause();
-          tauntAudioRef.current.src = p.voice_taunt;
-          tauntAudioRef.current.load();
-          tauntAudioRef.current.play().catch(e => console.warn("Broadcast taunt blocked:", e));
-        } catch (e) {
-          console.error("Broadcast playback error:", e);
-        }
+        playVoiceAudio(p.voice_taunt, p.name);
+        pendingTaunt.current = null; // Clear if it was pending
+      } else {
+        // Audio not yet synced. Mark as pending.
+        console.log(`⏳ [PENDING TAUNT] Waiting for audio data from: ${voiceTauntEvent.sender}`);
+        pendingTaunt.current = voiceTauntEvent;
       }
     }
-  }, [voiceTauntEvent, remotePlayers, playerName, setToastMsg]);
+  }, [voiceTauntEvent, remotePlayers]);
+
+  // Effect to catch pending taunts when remotePlayers updates
+  React.useEffect(() => {
+    if (pendingTaunt.current) {
+      const p = remotePlayers.find(pl => pl.name.toUpperCase() === pendingTaunt.current!.sender.toUpperCase());
+      if (p && p.voice_taunt) {
+        console.log(`✅ [RESOLVED TAUNT] Audio data arrived for: ${p.name}`);
+        playVoiceAudio(p.voice_taunt, p.name);
+        pendingTaunt.current = null;
+      }
+    }
+  }, [remotePlayers]);
+
+  const playVoiceAudio = (base64: string, senderName: string) => {
+    if (!tauntAudioRef.current) return;
+    
+    // Visual indicator
+    if (senderName.toUpperCase() !== playerName.toUpperCase()) {
+      setToastMsg(`${senderName.toUpperCase()} mengirim suara! 🎙️`);
+      triggerShake();
+      setTimeout(() => setToastMsg(null), 3000);
+    }
+
+    try {
+      tauntAudioRef.current.pause();
+      tauntAudioRef.current.src = base64;
+      tauntAudioRef.current.load();
+      tauntAudioRef.current.play().catch(e => {
+        console.warn("Playback blocked:", e);
+        if (senderName.toUpperCase() !== playerName.toUpperCase()) {
+          setToastMsg("Suara diblokir browser. Tap layar! 🔇");
+        }
+      });
+    } catch (e) {
+      console.error("Playback error:", e);
+    }
+  };
+
+  // --- DB SYNC TAUNT LISTENER (FALLBACK) ---
+  React.useEffect(() => {
+    remotePlayers.forEach(p => {
+      const lastTs = lastTauntTimestamps.current[p.name] || 0;
+      if (p.last_voice_taunt_at && p.last_voice_taunt_at > lastTs) {
+        // Only play if it wasn't already handled by broadcast (to avoid double play)
+        // We can check if it's within 2 seconds of current time
+        const isRecent = (Date.now() - p.last_voice_taunt_at) < 2000;
+        if (isRecent && p.voice_taunt) {
+           console.log(`🔊 [DB SYNC TAUNT] From: ${p.name}`);
+           playVoiceAudio(p.voice_taunt, p.name);
+        }
+        lastTauntTimestamps.current[p.name] = p.last_voice_taunt_at;
+      }
+    });
+  }, [remotePlayers, playerName, setToastMsg]);
 
   // --- OPPONENT MELD MODAL ---
   const [viewingOpponent, setViewingOpponent] = useState<any | null>(null);
@@ -318,6 +347,7 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
     // Check if dropped on discard zone
     if (over && over.id === "discard-pile-drop-zone") {
       if (isMyTurn && hasDrawnThisTurn) {
+        soundEngine.playDiscard();
         discardSelected(active.id as string);
         setSelectedCardIds([]);
       }
@@ -328,11 +358,19 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
       const activeIndex = playerHand.findIndex((c) => c.id === active.id);
       const overIndex = playerHand.findIndex((c) => c.id === over.id);
       if (activeIndex !== -1 && overIndex !== -1) {
+        soundEngine.playClick();
         const nextHand = arrayMove(playerHand, activeIndex, overIndex);
         syncHandSort(nextHand);
       }
     }
   };
+
+  // Effect to trigger shake on fire taunt target
+  React.useEffect(() => {
+    if (fireTaunt.active && fireTaunt.target?.toUpperCase() === playerName.toUpperCase()) {
+      triggerShake();
+    }
+  }, [fireTaunt.active, fireTaunt.target, playerName]);
 
   return (
     <div
@@ -343,7 +381,7 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
         setSelectedCardIds([]);
         setDiscardOverlayCard(null);
       }}
-      className={`fixed inset-0 ${tableThemeClass || "bg-[#041410]"} z-50 flex flex-col justify-between select-none animate-fade-in transition-colors duration-1000`}
+      className={`fixed inset-0 ${tableThemeClass || "bg-[#041410]"} z-50 flex flex-col justify-between select-none animate-fade-in transition-colors duration-1000 ${isShaking ? "animate-screen-shake" : ""}`}
     >
       <DndContext
         sensors={sensors}
@@ -494,9 +532,14 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
               onClick={async (e) => {
                 e.stopPropagation(); // Mencegah reset saat mengambil dek
                 if (isMyTurn && !hasDrawnThisTurn) {
-                  const drawn = await drawFromStock();
-                  if (drawn) {
-                    setRevealCard(drawn);
+                  try {
+                    soundEngine.playClick();
+                    const drawn = await drawFromStock();
+                    if (drawn) {
+                      setRevealCard(drawn);
+                    }
+                  } catch (err) {
+                    console.error("Draw failed", err);
                   }
                 }
               }}
@@ -560,7 +603,12 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
 
                       if (isSelected) {
                         if (isDiscardSelectionValid && isMyTurn && !hasDrawnThisTurn && !isTailTooLong) {
-                          drawFromDiscardAtIndex(logicalIndex);
+                          try {
+                            soundEngine.playClick();
+                            drawFromDiscardAtIndex(logicalIndex);
+                          } catch (err) {
+                            drawFromDiscardAtIndex(logicalIndex);
+                          }
                           setSelectedDiscardIndex(null);
                         } else {
                           setSelectedDiscardIndex(null);
@@ -679,6 +727,7 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
                 e.stopPropagation();
                 const success = await meldSelectedCards(selectedCardIds);
                 if (success) {
+                  soundEngine.playSuccess();
                   setSelectedCardIds([]);
                 }
               }}
@@ -978,6 +1027,24 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
         )}
 
       </DndContext>
+      <FloatingEmojis reactions={reactions} />
+      <style>{`
+        @keyframes screen-shake {
+          0%, 100% { transform: translate(0, 0) rotate(0deg); }
+          10% { transform: translate(-2px, -2px) rotate(-1deg); }
+          20% { transform: translate(2px, 2px) rotate(1deg); }
+          30% { transform: translate(-3px, 2px) rotate(0deg); }
+          40% { transform: translate(3px, -2px) rotate(1deg); }
+          50% { transform: translate(-2px, 1px) rotate(-1deg); }
+          60% { transform: translate(2px, -2px) rotate(0deg); }
+          70% { transform: translate(-3px, 1px) rotate(-1deg); }
+          80% { transform: translate(3px, 2px) rotate(1deg); }
+          90% { transform: translate(-1px, -1px) rotate(0deg); }
+        }
+        .animate-screen-shake {
+          animation: screen-shake 0.4s cubic-bezier(.36,.07,.19,.97) both;
+        }
+      `}</style>
     </div>
   );
 };

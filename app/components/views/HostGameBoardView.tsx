@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import FloatingEmojis from "../VFX/FloatingEmojis";
 import PlayingCard from "../PlayingCard";
 import { RemotePlayer, ViewState, ChatMessage } from "../../types/game";
 import { Card, getCardPoints } from "../../utils/gameLogic";
@@ -16,6 +17,7 @@ interface HostGameBoardViewProps {
   triggerGlobalEndGame: (updatedPlayers: RemotePlayer[]) => Promise<void>;
   fireTauntEvent: { sender: string; target: string } | null;
   voiceTauntEvent: { sender: string; timestamp: number } | null;
+  reactions: { id: string; emoji: string; timestamp: number }[];
   tableThemeClass?: string;
 }
 
@@ -33,6 +35,7 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
   triggerGlobalEndGame,
   fireTauntEvent,
   voiceTauntEvent,
+  reactions,
   tableThemeClass,
 }) => {
   const seatPlayers = remotePlayers.filter((p) => !p.isHost);
@@ -340,44 +343,65 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
     }
   };
 
-  useEffect(() => {
-    remotePlayers.forEach(p => {
-      const lastTs = lastTauntTimestamps.current[p.name] || 0;
-      if (p.last_voice_taunt_at && p.last_voice_taunt_at > lastTs) {
-        console.log(`🔊 [HOST VOICE TAUNT] From: ${p.name}`);
-        // Play taunt!
-        if (p.voice_taunt && tauntAudioRef.current) {
-          try {
-            tauntAudioRef.current.pause();
-            tauntAudioRef.current.src = p.voice_taunt;
-            tauntAudioRef.current.load();
-            tauntAudioRef.current.play().catch(e => console.log("Host: Auto-play blocked:", e));
-          } catch (e) {
-            console.error("Host playback error:", e);
-          }
-        }
-        lastTauntTimestamps.current[p.name] = p.last_voice_taunt_at;
-      }
-    });
-  }, [remotePlayers]);
+  const pendingTaunt = useRef<{ sender: string, timestamp: number } | null>(null);
 
   // --- INSTANT BROADCAST TAUNT LISTENER ---
   useEffect(() => {
     if (voiceTauntEvent) {
       const p = remotePlayers.find(pl => pl.name.toUpperCase() === voiceTauntEvent.sender.toUpperCase());
-      if (p && p.voice_taunt && tauntAudioRef.current) {
+      
+      if (p && p.voice_taunt) {
+        // We have the audio! Play it now.
         console.log(`⚡ [HOST INSTANT TAUNT] From: ${p.name}`);
-        try {
-          tauntAudioRef.current.pause();
-          tauntAudioRef.current.src = p.voice_taunt;
-          tauntAudioRef.current.load();
-          tauntAudioRef.current.play().catch(e => console.log("Host broadcast taunt blocked:", e));
-        } catch (e) {
-          console.error("Host broadcast playback error:", e);
-        }
+        playVoiceAudio(p.voice_taunt, p.name);
+        pendingTaunt.current = null; // Clear if it was pending
+      } else {
+        // Audio not yet synced. Mark as pending.
+        console.log(`⏳ [HOST PENDING TAUNT] Waiting for audio data from: ${voiceTauntEvent.sender}`);
+        pendingTaunt.current = voiceTauntEvent;
       }
     }
   }, [voiceTauntEvent, remotePlayers]);
+
+  // Effect to catch pending taunts when remotePlayers updates
+  useEffect(() => {
+    if (pendingTaunt.current) {
+      const p = remotePlayers.find(pl => pl.name.toUpperCase() === pendingTaunt.current!.sender.toUpperCase());
+      if (p && p.voice_taunt) {
+        console.log(`✅ [HOST RESOLVED TAUNT] Audio data arrived for: ${p.name}`);
+        playVoiceAudio(p.voice_taunt, p.name);
+        pendingTaunt.current = null;
+      }
+    }
+  }, [remotePlayers]);
+
+  const playVoiceAudio = (base64: string, senderName: string) => {
+    if (!tauntAudioRef.current) return;
+    
+    try {
+      tauntAudioRef.current.pause();
+      tauntAudioRef.current.src = base64;
+      tauntAudioRef.current.load();
+      tauntAudioRef.current.play().catch(e => console.log("Host playback blocked:", e));
+    } catch (e) {
+      console.error("Host playback error:", e);
+    }
+  };
+
+  // --- DB SYNC TAUNT LISTENER (FALLBACK) ---
+  useEffect(() => {
+    remotePlayers.forEach(p => {
+      const lastTs = lastTauntTimestamps.current[p.name] || 0;
+      if (p.last_voice_taunt_at && p.last_voice_taunt_at > lastTs) {
+        const isRecent = (Date.now() - p.last_voice_taunt_at) < 2000;
+        if (isRecent && p.voice_taunt) {
+           console.log(`🔊 [HOST DB SYNC TAUNT] From: ${p.name}`);
+           playVoiceAudio(p.voice_taunt, p.name);
+        }
+        lastTauntTimestamps.current[p.name] = p.last_voice_taunt_at;
+      }
+    });
+  }, [remotePlayers]);
 
   return (
     <div 
@@ -919,6 +943,7 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
           </div>
         </div>
       )}
+      <FloatingEmojis reactions={reactions} />
     </div>
   );
 };

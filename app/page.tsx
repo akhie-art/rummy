@@ -106,7 +106,16 @@ export default function Home() {
 
     // 5.6 Reactions
     if (newState.reactions) {
-      setReactions(newState.reactions.map(r => ({ id: r.id, emoji: r.emoji, timestamp: r.timestamp })));
+      setReactions(prev => {
+        const incoming = newState.reactions || [];
+        const combined = [...prev];
+        incoming.forEach(inc => {
+          if (!combined.some(c => c.id === inc.id)) {
+            combined.push({ id: inc.id, emoji: inc.emoji, timestamp: inc.timestamp });
+          }
+        });
+        return combined.sort((a, b) => b.timestamp - a.timestamp).slice(0, 10);
+      });
     }
 
     // 6. View Routing
@@ -396,6 +405,18 @@ export default function Home() {
             setVoiceTauntEvent({ sender: payload.sender, timestamp: Date.now() });
             // Auto-clear after a bit
             setTimeout(() => setVoiceTauntEvent(null), 1000);
+          }
+        )
+        .on(
+          "broadcast",
+          { event: "reaction" },
+          ({ payload }) => {
+            console.log("🎈 [BROADCAST] REACTION RECEIVED:", payload.emoji);
+            setReactions(prev => {
+              // Avoid duplicates if already synced via DB
+              if (prev.some(r => r.id === payload.id)) return prev;
+              return [{ id: payload.id, emoji: payload.emoji, timestamp: payload.timestamp }, ...prev].slice(0, 10);
+            });
           }
         )
         .subscribe((status) => {
@@ -817,6 +838,7 @@ export default function Home() {
     localStorage.removeItem("rummy_room_code");
     localStorage.removeItem("rummy_player_name");
     localStorage.removeItem("rummy_is_host");
+    localStorage.removeItem("rummy_voice_taunt");
     
     try {
       supabase.removeAllChannels();
@@ -1304,28 +1326,45 @@ export default function Home() {
 
   const sendReaction = async (emoji: string) => {
     if (!roomCode) return;
-    const { data: currentRoom } = await supabase.from("rooms").select("state").eq("code", roomCode.toUpperCase()).single();
+    const now = Date.now();
+    const reactionId = `${playerName}_${now}`;
+
+    // 1. INSTANT BROADCAST (Ultra-fast)
+    if (channelRef.current) {
+      console.log(`⚡ [BROADCAST] Sending instant reaction: ${emoji}`);
+      channelRef.current.send({
+        type: "broadcast",
+        event: "reaction",
+        payload: { id: reactionId, sender: playerName, emoji, timestamp: now }
+      });
+    }
+
+    // 2. PERSISTENCE (Background)
+    const { data: currentRoom } = await supabase.from("rooms").select("game_state").eq("room_code", roomCode.toUpperCase()).single();
     if (currentRoom) {
-      const state = currentRoom.state as RemoteGameState;
-      const now = Date.now();
+      const state = currentRoom.game_state as RemoteGameState;
       const newReaction = {
-        id: `${playerName}_${now}_${Math.random().toString(36).substr(2, 5)}`,
+        id: reactionId,
         sender: playerName,
         emoji,
         timestamp: now
       };
       
-      // Keep only recent reactions (last 10) to avoid state bloat
       const updatedReactions = [newReaction, ...(state.reactions || [])].slice(0, 10);
-      
       const nextState = { ...state, reactions: updatedReactions };
-      await supabase.from("rooms").update({ state: nextState }).eq("code", roomCode.toUpperCase());
+      await supabase.from("rooms").update({ game_state: nextState }).eq("room_code", roomCode.toUpperCase());
     }
   };
 
   const handleUpdateVoiceTaunt = async (base64: string) => {
     console.log(`🎤 [RECORDER] Base64 size: ${Math.round(base64.length / 1024)} KB`);
     setVoiceTaunt(base64);
+    
+    // Backup to localStorage for instant recovery on refresh
+    if (typeof window !== "undefined") {
+      localStorage.setItem("rummy_voice_taunt", base64);
+    }
+
     if (!roomCode) return;
 
     const { data, error: selectError } = await supabase.from("rooms").select("game_state").eq("room_code", roomCode.toUpperCase()).single();
@@ -1345,6 +1384,17 @@ export default function Home() {
 
   // Restore voice taunt from remote state if available (e.g. after refresh)
   useEffect(() => {
+    // 1. Try localStorage first (fastest)
+    if (!voiceTaunt && typeof window !== "undefined") {
+      const cached = localStorage.getItem("rummy_voice_taunt");
+      if (cached) {
+        console.log("🔄 [RESTORE] Recovered voice taunt from localStorage");
+        setVoiceTaunt(cached);
+        return;
+      }
+    }
+
+    // 2. Try Remote State (Sync from DB)
     if (!voiceTaunt && remotePlayers.length > 0 && playerName) {
       const me = remotePlayers.find(p => p.name.toUpperCase() === playerName.toUpperCase());
       if (me?.voice_taunt) {
@@ -2350,6 +2400,7 @@ export default function Home() {
           chatMessages={chatMessages}
           fireTauntEvent={hostFireTaunt}
           voiceTauntEvent={voiceTauntEvent}
+          reactions={reactions}
           finishGame={handleFinishGame}
           triggerGlobalEndGame={handleTriggerGlobalEndGame}
           tableThemeClass={activeTableTheme}
@@ -2392,11 +2443,13 @@ export default function Home() {
           discardSelected={discardSelected}
           meldSelectedCards={meldSelectedCards}
           finishShowdown={finishShowdown}
+          fireTaunt={fireTaunt}
           gameStatus={gameStatus}
           syncHandSort={syncHandSort}
           setToastMsg={setToastMsg}
           onShowLeaderboard={() => setShowLeaderboard(true)}
           sendReaction={sendReaction}
+          reactions={reactions}
           sendVoiceTaunt={sendVoiceTaunt}
           voiceTauntEvent={voiceTauntEvent}
           myVoiceTaunt={voiceTaunt}

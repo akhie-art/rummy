@@ -14,16 +14,17 @@ interface FloatingEmojisProps {
 
 const FloatingEmojis: React.FC<FloatingEmojisProps> = ({ reactions }) => {
   const [visibleEmojis, setVisibleEmojis] = useState<EmojiItem[]>([]);
-  const [processedIds] = useState(new Set<string>());
+  const processedIds = React.useRef(new Set<string>());
 
   useEffect(() => {
     // Only process new reactions
     const now = Date.now();
-    const newReactions = reactions.filter(r => !processedIds.has(r.id) && now - r.timestamp < 3000);
+    const newReactions = reactions.filter(r => !processedIds.current.has(r.id) && now - r.timestamp < 3000);
     
     if (newReactions.length > 0) {
+      console.log(`🌸 [VFX] Rendering ${newReactions.length} new emojis`);
       const mapped = newReactions.map(r => {
-        processedIds.add(r.id);
+        processedIds.current.add(r.id);
         return {
           id: r.id,
           emoji: r.emoji,
@@ -37,26 +38,25 @@ const FloatingEmojis: React.FC<FloatingEmojisProps> = ({ reactions }) => {
       setTimeout(() => {
         const idsToRemove = mapped.map(m => m.id);
         setVisibleEmojis(prev => prev.filter(e => !idsToRemove.includes(e.id)));
-      }, 3000);
+      }, 3500);
     }
   }, [reactions]);
 
   return (
-    <div className="fixed inset-0 pointer-events-none z-[100002] overflow-hidden">
+    <div className="fixed inset-0 pointer-events-none z-[999999] overflow-hidden">
       {visibleEmojis.map((e) => (
         <div
           key={e.id}
-          className="absolute bottom-[-50px] text-4xl animate-float-emoji"
+          className="absolute bottom-[-50px] text-5xl"
           style={{
             left: `${e.x}%`,
-            animationDuration: "3s",
-            animationFillMode: "forwards"
+            animation: "float-emoji 3s ease-out forwards"
           }}
         >
           {e.emoji}
         </div>
       ))}
-      <style jsx global>{`
+      <style>{`
         @keyframes float-emoji {
           0% {
             transform: translateY(0) scale(0.5) rotate(0deg);
@@ -64,16 +64,12 @@ const FloatingEmojis: React.FC<FloatingEmojisProps> = ({ reactions }) => {
           }
           10% {
             opacity: 1;
-            transform: translateY(-50px) scale(1.2) rotate(10deg);
+            transform: translateY(-50px) scale(1.5) rotate(15deg);
           }
           100% {
-            transform: translateY(-100vh) scale(1) rotate(-20deg);
+            transform: translateY(-110vh) scale(1) rotate(-30deg);
             opacity: 0;
           }
-        }
-        .animate-float-emoji {
-          animation-name: float-emoji;
-          animation-timing-function: ease-out;
         }
       `}</style>
     </div>
