@@ -54,6 +54,7 @@ interface PlayerGameBoardViewProps {
   playerName: string;
   sendReaction: (emoji: string) => Promise<void>;
   sendVoiceTaunt: () => Promise<void>;
+  voiceTauntEvent: { sender: string, timestamp: number } | null;
   myVoiceTaunt?: string;
   tableThemeClass?: string;
 }
@@ -90,6 +91,7 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
   playerName,
   sendReaction,
   sendVoiceTaunt,
+  voiceTauntEvent,
   myVoiceTaunt,
   tableThemeClass,
 }) => {
@@ -220,6 +222,31 @@ const PlayerGameBoardView: React.FC<PlayerGameBoardViewProps> = ({
       }
     });
   }, [remotePlayers, playerName, setToastMsg]);
+
+  // --- INSTANT BROADCAST TAUNT LISTENER ---
+  React.useEffect(() => {
+    if (voiceTauntEvent) {
+      const p = remotePlayers.find(pl => pl.name.toUpperCase() === voiceTauntEvent.sender.toUpperCase());
+      if (p && p.voice_taunt && tauntAudioRef.current) {
+        console.log(`⚡ [INSTANT TAUNT] From: ${p.name}`);
+        
+        // Visual indicator
+        if (p.name.toUpperCase() !== playerName.toUpperCase()) {
+          setToastMsg(`${p.name.toUpperCase()} mengirim suara! 🎙️`);
+          setTimeout(() => setToastMsg(null), 3000);
+        }
+
+        try {
+          tauntAudioRef.current.pause();
+          tauntAudioRef.current.src = p.voice_taunt;
+          tauntAudioRef.current.load();
+          tauntAudioRef.current.play().catch(e => console.warn("Broadcast taunt blocked:", e));
+        } catch (e) {
+          console.error("Broadcast playback error:", e);
+        }
+      }
+    }
+  }, [voiceTauntEvent, remotePlayers, playerName, setToastMsg]);
 
   // --- OPPONENT MELD MODAL ---
   const [viewingOpponent, setViewingOpponent] = useState<any | null>(null);

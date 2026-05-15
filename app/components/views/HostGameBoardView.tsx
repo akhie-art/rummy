@@ -15,6 +15,7 @@ interface HostGameBoardViewProps {
   finishGame: (updatedPlayers: RemotePlayer[]) => Promise<void>;
   triggerGlobalEndGame: (updatedPlayers: RemotePlayer[]) => Promise<void>;
   fireTauntEvent: { sender: string; target: string } | null;
+  voiceTauntEvent: { sender: string; timestamp: number } | null;
   tableThemeClass?: string;
 }
 
@@ -31,6 +32,7 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
   finishGame,
   triggerGlobalEndGame,
   fireTauntEvent,
+  voiceTauntEvent,
   tableThemeClass,
 }) => {
   const seatPlayers = remotePlayers.filter((p) => !p.isHost);
@@ -358,6 +360,24 @@ const HostGameBoardView: React.FC<HostGameBoardViewProps> = ({
       }
     });
   }, [remotePlayers]);
+
+  // --- INSTANT BROADCAST TAUNT LISTENER ---
+  useEffect(() => {
+    if (voiceTauntEvent) {
+      const p = remotePlayers.find(pl => pl.name.toUpperCase() === voiceTauntEvent.sender.toUpperCase());
+      if (p && p.voice_taunt && tauntAudioRef.current) {
+        console.log(`⚡ [HOST INSTANT TAUNT] From: ${p.name}`);
+        try {
+          tauntAudioRef.current.pause();
+          tauntAudioRef.current.src = p.voice_taunt;
+          tauntAudioRef.current.load();
+          tauntAudioRef.current.play().catch(e => console.log("Host broadcast taunt blocked:", e));
+        } catch (e) {
+          console.error("Host broadcast playback error:", e);
+        }
+      }
+    }
+  }, [voiceTauntEvent, remotePlayers]);
 
   return (
     <div 

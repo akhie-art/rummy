@@ -72,6 +72,7 @@ export default function Home() {
           p.score !== sP.score || 
           p.hasDrawn !== sP.hasDrawn ||
           p.last_voice_taunt_at !== sP.last_voice_taunt_at ||
+          p.voice_taunt !== sP.voice_taunt ||
           p.isDoneShowdown !== sP.isDoneShowdown
         );
       });
@@ -185,6 +186,7 @@ export default function Home() {
   const [cardBackColor, setCardBackColor] = useState<string>("emerald");
   const [tableTheme, setTableTheme] = useState<string>("emerald");
   const [voiceTaunt, setVoiceTaunt] = useState<string | undefined>(undefined);
+  const [voiceTauntEvent, setVoiceTauntEvent] = useState<{ sender: string, timestamp: number } | null>(null);
   const [reactions, setReactions] = useState<{ id: string, emoji: string, timestamp: number }[]>([]);
 
   const cardThemes: any = {
@@ -384,6 +386,16 @@ export default function Home() {
             // ALWAYS trigger hostFireTaunt if we are currently in host game view!
             setHostFireTaunt({ sender: payload.sender, target: payload.target });
             setTimeout(() => setHostFireTaunt(null), 2500);
+          }
+        )
+        .on(
+          "broadcast",
+          { event: "voice-taunt" },
+          ({ payload }) => {
+            console.log("🔊 [BROADCAST] VOICE TAUNT RECEIVED from:", payload.sender);
+            setVoiceTauntEvent({ sender: payload.sender, timestamp: Date.now() });
+            // Auto-clear after a bit
+            setTimeout(() => setVoiceTauntEvent(null), 1000);
           }
         )
         .subscribe((status) => {
@@ -1312,35 +1324,58 @@ export default function Home() {
   };
 
   const handleUpdateVoiceTaunt = async (base64: string) => {
+    console.log(`🎤 [RECORDER] Base64 size: ${Math.round(base64.length / 1024)} KB`);
     setVoiceTaunt(base64);
     if (!roomCode) return;
 
-    const { data } = await supabase.from("rooms").select("state").eq("code", roomCode.toUpperCase()).single();
-    if (data?.state) {
-      const newState = { ...data.state };
+    const { data, error: selectError } = await supabase.from("rooms").select("game_state").eq("room_code", roomCode.toUpperCase()).single();
+    if (selectError) console.error("❌ [SYNC ERROR] Select room failed:", selectError);
+    
+    if (data?.game_state) {
+      const newState = { ...data.game_state };
       const myIdx = newState.players.findIndex((p: any) => p.name.toUpperCase() === playerName.toUpperCase());
       if (myIdx !== -1) {
         newState.players[myIdx].voice_taunt = base64;
-        await supabase.from("rooms").update({ state: newState }).eq("code", roomCode.toUpperCase());
+        console.log(`💾 [SYNC] Saving voice taunt to Supabase for ${playerName}`);
+        const { error: updateError } = await supabase.from("rooms").update({ game_state: newState }).eq("room_code", roomCode.toUpperCase());
+        if (updateError) console.error("❌ [SYNC ERROR] Update failed:", updateError);
       }
     }
   };
 
+  // Restore voice taunt from remote state if available (e.g. after refresh)
+  useEffect(() => {
+    if (!voiceTaunt && remotePlayers.length > 0 && playerName) {
+      const me = remotePlayers.find(p => p.name.toUpperCase() === playerName.toUpperCase());
+      if (me?.voice_taunt) {
+        console.log("🔄 [RESTORE] Recovered voice taunt from remote state");
+        setVoiceTaunt(me.voice_taunt);
+      }
+    }
+  }, [remotePlayers, playerName, voiceTaunt]);
+
   const sendVoiceTaunt = async () => {
     if (!roomCode || !voiceTaunt) return;
 
-    const { data } = await supabase.from("rooms").select("state").eq("code", roomCode.toUpperCase()).single();
-    if (data?.state) {
-      const newState = { ...data.state };
+    // 1. INSTANT BROADCAST (Ultra-fast trigger)
+    if (channelRef.current) {
+      console.log(`⚡ [BROADCAST] Sending instant voice taunt trigger...`);
+      channelRef.current.send({
+        type: "broadcast",
+        event: "voice-taunt",
+        payload: { sender: playerName }
+      });
+    }
+
+    // 2. PERSISTENCE UPDATE (Background)
+    const { data, error: selectError } = await supabase.from("rooms").select("game_state").eq("room_code", roomCode.toUpperCase()).single();
+    if (data?.game_state) {
+      const newState = { ...data.game_state };
       const myIdx = newState.players.findIndex((p: any) => p.name.toUpperCase() === playerName.toUpperCase());
       if (myIdx !== -1) {
         newState.players[myIdx].last_voice_taunt_at = Date.now();
-        // Also ensure voice_taunt is attached in case it was lost
         newState.players[myIdx].voice_taunt = voiceTaunt;
-        
-        console.log(`📡 [SEND TAUNT] Updating state for ${playerName}`);
-        const { error } = await supabase.from("rooms").update({ state: newState }).eq("code", roomCode.toUpperCase());
-        if (error) console.error("❌ [TAUNT ERROR]:", error);
+        await supabase.from("rooms").update({ game_state: newState }).eq("room_code", roomCode.toUpperCase());
       }
     }
   };
@@ -2314,6 +2349,7 @@ export default function Home() {
           setView={handleExitGame}
           chatMessages={chatMessages}
           fireTauntEvent={hostFireTaunt}
+          voiceTauntEvent={voiceTauntEvent}
           finishGame={handleFinishGame}
           triggerGlobalEndGame={handleTriggerGlobalEndGame}
           tableThemeClass={activeTableTheme}
@@ -2362,6 +2398,7 @@ export default function Home() {
           onShowLeaderboard={() => setShowLeaderboard(true)}
           sendReaction={sendReaction}
           sendVoiceTaunt={sendVoiceTaunt}
+          voiceTauntEvent={voiceTauntEvent}
           myVoiceTaunt={voiceTaunt}
           tableThemeClass={activeTableTheme}
           melds={remotePlayers.find((p) => p.name.toUpperCase() === playerName.toUpperCase())?.melds || []}
